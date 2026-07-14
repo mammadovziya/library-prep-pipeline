@@ -1,0 +1,16 @@
+[Interface]
+Address = {{ wireguard_ip }}/32
+ListenPort = {{ wireguard_port }}
+PrivateKey = {{ vault_wireguard_private_key }}
+SaveConfig = false
+
+{% for peer in groups['all'] | sort %}
+{% if peer != inventory_hostname %}
+[Peer]
+PublicKey = {{ hostvars[peer].wireguard_public_key }}
+AllowedIPs = {{ hostvars[peer].wireguard_ip }}/32
+Endpoint = {{ hostvars[peer].ansible_host }}:{{ wireguard_port }}
+PersistentKeepalive = 25
+
+{% endif %}
+{% endfor %}

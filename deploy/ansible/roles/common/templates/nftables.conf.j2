@@ -1,0 +1,33 @@
+#!/usr/sbin/nft -f
+table inet library_prep_filter
+delete table inet library_prep_filter
+
+table inet library_prep_filter {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    ct state established,related accept
+    iifname "lo" accept
+    ip protocol icmp accept
+    ip6 nexthdr ipv6-icmp accept
+    udp dport {{ wireguard_port }} accept
+    ip saddr {{ admin_network | default('192.0.2.0/24') }} tcp dport 22 accept
+{% if 'worker' in node_roles %}
+    iifname "wg0" ip saddr 10.77.0.1 tcp dport 9100 accept
+{% endif %}
+
+{% if 'control' in node_roles %}
+    tcp dport { 80, 443 } accept
+    iifname "wg0" ip saddr {{ wireguard_network }} tcp dport { 4222, 8443 } accept
+    iifname "wg0" ip saddr { 10.77.0.2, 10.77.0.3, 10.77.0.4 } tcp dport 5432 accept
+{% endif %}
+{% if 'storage' in node_roles %}
+    iifname "wg0" ip saddr {{ wireguard_network }} tcp dport 443 accept
+    iifname "wg0" ip saddr { 10.77.0.2, 10.77.0.3, 10.77.0.4 } tcp dport { 8080, 8888, 9333 } accept
+    iifname "wg0" ip saddr 10.77.0.1 tcp dport 22 accept
+{% endif %}
+  }
+
+  chain output {
+    type filter hook output priority 0; policy accept;
+  }
+}

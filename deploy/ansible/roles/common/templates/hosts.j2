@@ -1,0 +1,6 @@
+{% for host in groups['all'] | sort %}
+{{ hostvars[host].wireguard_ip }} {{ host }}.internal{% if host == 'control' %} control.internal api.internal nats.internal{% endif %}{% if hostvars[host].storage_alias is defined %} {{ hostvars[host].storage_alias }}.internal{% endif %}
+{% endfor %}
+10.77.0.2 storage.internal
+10.77.0.2 {{ objects_domain }}
+10.77.0.3 {{ objects_domain }}

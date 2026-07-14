@@ -1,0 +1,24 @@
+{
+  "policies": [
+    {
+      "name": "api-object-io",
+      "content": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:ListBucket\"],\"Resource\":\"arn:aws:s3:::library-inputs\"},{\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\",\"s3:AbortMultipartUpload\",\"s3:ListMultipartUploadParts\"],\"Resource\":[\"arn:aws:s3:::library-inputs/uploads/*\",\"arn:aws:s3:::library-artifacts/jobs/*\"]}]}"
+    },
+    {
+      "name": "worker-attempt-io",
+      "content": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\"],\"Resource\":[\"arn:aws:s3:::library-inputs/*\",\"arn:aws:s3:::library-artifacts/jobs/*/tasks/*/attempts/*/*\"]},{\"Effect\":\"Allow\",\"Action\":[\"s3:PutObject\"],\"Resource\":\"arn:aws:s3:::library-artifacts/jobs/*/tasks/*/attempts/*/*\"}]}"
+    }
+  ],
+  "identities": [
+    {
+      "name": "api",
+      "credentials": [{ "accessKey": "RENDER_WITH_ANSIBLE", "secretKey": "RENDER_WITH_ANSIBLE_VAULT" }],
+      "policyNames": ["api-object-io"]
+    },
+    {
+      "name": "worker-template",
+      "credentials": [{ "accessKey": "RENDER_PER_WORKER", "secretKey": "RENDER_PER_WORKER_VAULT" }],
+      "policyNames": ["worker-attempt-io"]
+    }
+  ]
+}

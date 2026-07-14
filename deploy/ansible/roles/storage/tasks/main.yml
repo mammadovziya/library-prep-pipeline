@@ -1,0 +1,89 @@
+---
+- name: Install pgBackRest repository service dependencies
+  ansible.builtin.apt:
+    name: [pgbackrest, openssh-server]
+    state: present
+
+- name: Create restricted pgBackRest repository account
+  ansible.builtin.user:
+    name: pgbackrest
+    home: /var/lib/pgbackrest
+    shell: /bin/bash
+    create_home: true
+    system: true
+
+- name: Authorize control-plane pgBackRest key
+  ansible.posix.authorized_key:
+    user: pgbackrest
+    key: "{{ vault_pgbackrest_public_key }}"
+    key_options: restrict
+    state: present
+  no_log: true
+
+- name: Create encrypted backup repository directory
+  ansible.builtin.file:
+    path: "/var/lib/pgbackrest/{{ 'repo1' if storage_alias == 'storage-b' else 'repo2' }}"
+    state: directory
+    owner: pgbackrest
+    group: pgbackrest
+    mode: "0750"
+  when: storage_alias in ['storage-b', 'storage-c']
+
+- name: Render repository-side pgBackRest configuration
+  ansible.builtin.template:
+    src: pgbackrest-repository.conf.j2
+    dest: /etc/pgbackrest/pgbackrest.conf
+    owner: pgbackrest
+    group: pgbackrest
+    mode: "0600"
+  when: storage_alias in ['storage-b', 'storage-c']
+  no_log: true
+
+- name: Create storage directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop: [/opt/library-prep/deploy/storage, /srv/seaweed/master, /srv/seaweed/volume]
+
+- name: Install storage Compose project
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../{{ item }}"
+    dest: "/opt/library-prep/deploy/storage/{{ item | basename }}"
+    owner: root
+    group: root
+    mode: "0640"
+  loop: [storage/compose.yml]
+
+- name: Render filer PostgreSQL metadata configuration
+  ansible.builtin.template:
+    src: filer.toml.j2
+    dest: /opt/library-prep/deploy/storage/filer.toml
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Render distinct S3 service credentials
+  ansible.builtin.template:
+    src: s3.json.j2
+    dest: /opt/library-prep/deploy/storage/s3.json
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Install storage systemd unit
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../systemd/library-prep-storage.service"
+    dest: /etc/systemd/system/library-prep-storage.service
+    mode: "0644"
+
+- name: Reload systemd for storage services
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Enable replicated storage services
+  ansible.builtin.systemd_service:
+    name: library-prep-storage.service
+    enabled: true

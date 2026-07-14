@@ -1,0 +1,81 @@
+all:
+  vars:
+    ansible_user: libraryops
+    wireguard_interface: wg0
+    wireguard_port: 51820
+    wireguard_network: 10.77.0.0/24
+    objects_domain: objects.example.org
+    sandboxd_binary_path: ../../build/linux-amd64/library-prep-sandboxd
+    # In an encrypted group_vars/all/vault.yml, provide vault_environment_files
+    # (images.env plus role-specific *.env files) and per-host vault_pki_files.
+    # control-compose.env must contain POSTGRES_PASSWORD,
+    # AUTHENTIK_DB_PASSWORD, and SEAWEED_FILER_DB_PASSWORD; these values are
+    # required while Compose renders the control project.
+    # Never put private keys or service secrets in this inventory.
+  hosts:
+    control:
+      ansible_host: 192.0.2.10
+      wireguard_ip: 10.77.0.1
+      wireguard_public_key: REPLACE
+      node_roles: [control]
+    worker-5090:
+      ansible_host: 192.0.2.20
+      wireguard_ip: 10.77.0.2
+      wireguard_public_key: REPLACE
+      gpu_type: rtx5090
+      storage_alias: storage-a
+      storage_max_volumes: 26
+      storage_gateway: true
+      node_roles: [worker, storage]
+    worker-4090-01:
+      ansible_host: 192.0.2.21
+      wireguard_ip: 10.77.0.3
+      wireguard_public_key: REPLACE
+      gpu_type: rtx4090
+      storage_alias: storage-b
+      storage_max_volumes: 13
+      storage_gateway: true
+      node_roles: [worker, storage]
+    worker-4090-02:
+      ansible_host: 192.0.2.22
+      wireguard_ip: 10.77.0.4
+      wireguard_public_key: REPLACE
+      gpu_type: rtx4090
+      storage_alias: storage-c
+      storage_max_volumes: 13
+      storage_gateway: false
+      node_roles: [worker, storage]
+    worker-4090-03:
+      ansible_host: 192.0.2.23
+      wireguard_ip: 10.77.0.5
+      wireguard_public_key: REPLACE
+      gpu_type: rtx4090
+      node_roles: [worker]
+    worker-4090-04:
+      ansible_host: 192.0.2.24
+      wireguard_ip: 10.77.0.6
+      wireguard_public_key: REPLACE
+      gpu_type: rtx4090
+      node_roles: [worker]
+    worker-4090-05:
+      ansible_host: 192.0.2.25
+      wireguard_ip: 10.77.0.7
+      wireguard_public_key: REPLACE
+      gpu_type: rtx4090
+      node_roles: [worker]
+  children:
+    control_nodes:
+      hosts: { control: {} }
+    worker_nodes:
+      hosts:
+        worker-5090: {}
+        worker-4090-01: {}
+        worker-4090-02: {}
+        worker-4090-03: {}
+        worker-4090-04: {}
+        worker-4090-05: {}
+    storage_nodes:
+      hosts:
+        worker-5090: {}
+        worker-4090-01: {}
+        worker-4090-02: {}

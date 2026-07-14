@@ -1,0 +1,12 @@
+[global]
+{% if storage_alias == 'storage-b' %}
+repo1-path=/var/lib/pgbackrest/repo1
+repo1-cipher-type=aes-256-cbc
+repo1-cipher-pass={{ vault_pgbackrest_repo1_cipher_pass }}
+{% elif storage_alias == 'storage-c' %}
+repo2-path=/var/lib/pgbackrest/repo2
+repo2-cipher-type=aes-256-cbc
+repo2-cipher-pass={{ vault_pgbackrest_repo2_cipher_pass }}
+{% endif %}
+
+[library-prep]

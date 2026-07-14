@@ -1,0 +1,15 @@
+[Unit]
+Description=Library Prep encrypted PostgreSQL backup
+Requires=library-prep-control.service
+After=library-prep-control.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/library-prep/deploy/control
+EnvironmentFile=/etc/library-prep/images.env
+EnvironmentFile=/etc/library-prep/domains.env
+EnvironmentFile=/etc/library-prep/control-compose.env
+ExecStart=/bin/bash /opt/library-prep/deploy/control/backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

@@ -1,0 +1,27 @@
+groups:
+  - name: fleet-health
+    rules:
+      - alert: FleetTargetDown
+        expr: up == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "A fixed fleet monitoring target is unavailable"
+      - alert: InternalServiceProbeFailed
+        expr: probe_success == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "An mTLS API or S3 readiness probe is failing"
+      - alert: HostDiskReserveLow
+        expr: node_filesystem_avail_bytes{mountpoint=~"/|/srv.*",fstype!~"tmpfs|overlay"} < 21474836480
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "A host has less than the 20 GiB safety reserve"
+      - alert: HostMemoryPressure
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "A host has less than ten percent available memory"

@@ -1,0 +1,94 @@
+---
+- name: Install host baseline packages
+  ansible.builtin.apt:
+    name: [wireguard, nftables, chrony, apparmor, docker.io, docker-compose-v2, ca-certificates]
+    state: present
+    update_cache: true
+
+- name: Create fixed container PKI reader group
+  ansible.builtin.group:
+    name: libraryprep-pki
+    gid: 65200
+    system: true
+    state: present
+
+- name: Create fixed sandbox agent group
+  ansible.builtin.group:
+    name: libraryprep-agent
+    gid: 65532
+    system: true
+    state: present
+
+- name: Create platform directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /opt/library-prep, mode: "0755" }
+    - { path: /etc/library-prep, mode: "0750" }
+    - { path: /etc/library-prep/pki, mode: "0750" }
+
+- name: Restrict the PKI directory to root and the container reader group
+  ansible.builtin.file:
+    path: /etc/library-prep/pki
+    state: directory
+    owner: root
+    group: libraryprep-pki
+    mode: "0750"
+
+- name: Install Vault-managed service environment files
+  ansible.builtin.copy:
+    content: "{{ item.value }}"
+    dest: "/etc/library-prep/{{ item.key }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ (vault_environment_files | default({})) | dict2items }}"
+  no_log: true
+
+- name: Install Vault-managed internal PKI material
+  ansible.builtin.copy:
+    content: "{{ item.value }}"
+    dest: "/etc/library-prep/pki/{{ item.key }}"
+    owner: root
+    group: libraryprep-pki
+    mode: "{{ '0640' if item.key.endswith('.key') else '0644' }}"
+  loop: "{{ (vault_pki_files | default({})) | dict2items }}"
+  no_log: true
+
+- name: Render WireGuard configuration
+  ansible.builtin.template:
+    src: wg0.conf.j2
+    dest: /etc/wireguard/wg0.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart WireGuard
+
+- name: Render stable internal host names
+  ansible.builtin.blockinfile:
+    dest: /etc/hosts
+    marker: "# {mark} LIBRARY PREP MANAGED HOSTS"
+    block: "{{ lookup('ansible.builtin.template', 'hosts.j2') }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Render host firewall policy
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Reload nftables
+
+- name: Enable baseline services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [docker, chrony, nftables, wg-quick@wg0]

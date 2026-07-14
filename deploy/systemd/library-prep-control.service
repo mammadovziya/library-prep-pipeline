@@ -1,0 +1,22 @@
+[Unit]
+Description=Library Prep control-plane Compose project
+Requires=docker.service wg-quick@wg0.service
+After=docker.service wg-quick@wg0.service network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/library-prep/deploy/control
+EnvironmentFile=/etc/library-prep/images.env
+EnvironmentFile=/etc/library-prep/domains.env
+EnvironmentFile=/etc/library-prep/control-compose.env
+ExecStart=/usr/bin/docker compose --env-file /etc/library-prep/images.env up --detach --remove-orphans --wait
+ExecStop=/usr/bin/docker compose stop --timeout 120
+Restart=on-failure
+RestartSec=15s
+TimeoutStartSec=10min
+TimeoutStopSec=5min
+
+[Install]
+WantedBy=multi-user.target

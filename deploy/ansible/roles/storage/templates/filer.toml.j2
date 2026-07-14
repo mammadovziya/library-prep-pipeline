@@ -1,0 +1,13 @@
+[postgres2]
+enabled = true
+hostname = "control.internal"
+port = 5432
+username = "seaweed_filer"
+password = "{{ vault_seaweed_filer_db_password }}"
+database = "seaweed_filer"
+sslmode = "disable"
+connection_max_idle = 25
+connection_max_open = 75
+
+[filer.options]
+recursive_delete = false

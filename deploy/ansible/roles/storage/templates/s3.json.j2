@@ -1,0 +1,40 @@
+{
+  "policies": [
+    {
+      "name": "api-object-io",
+      "content": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:ListBucket\"],\"Resource\":\"arn:aws:s3:::library-inputs\"},{\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\",\"s3:AbortMultipartUpload\",\"s3:ListMultipartUploadParts\"],\"Resource\":[\"arn:aws:s3:::library-inputs/uploads/*\",\"arn:aws:s3:::library-artifacts/jobs/*\"]}]}"
+    },
+    {
+      "name": "garbage-collector-object-io",
+      "content": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:ListBucket\"],\"Resource\":[\"arn:aws:s3:::library-inputs\",\"arn:aws:s3:::library-artifacts\"]},{\"Effect\":\"Allow\",\"Action\":[\"s3:DeleteObject\",\"s3:AbortMultipartUpload\"],\"Resource\":[\"arn:aws:s3:::library-inputs/uploads/*\",\"arn:aws:s3:::library-artifacts/jobs/*\"]}]}"
+    },
+{% for worker in groups['worker_nodes'] | sort %}
+    {
+      "name": "{{ worker }}-attempt-io",
+      "content": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\"],\"Resource\":[\"arn:aws:s3:::library-inputs/*\",\"arn:aws:s3:::library-artifacts/jobs/*/tasks/*/attempts/*/*\"]},{\"Effect\":\"Allow\",\"Action\":[\"s3:PutObject\"],\"Resource\":\"arn:aws:s3:::library-artifacts/jobs/*/tasks/*/attempts/*/*\"}]}"
+    }{{ "," if not loop.last else "" }}
+{% endfor %}
+  ],
+  "identities": [
+    {
+      "name": "storage-init",
+      "credentials": [{ "accessKey": "{{ vault_s3_storage_init_access_key }}", "secretKey": "{{ vault_s3_storage_init_secret_key }}" }],
+      "actions": ["Admin"]
+    },
+    {
+      "name": "api",
+      "credentials": [{ "accessKey": "{{ vault_s3_api_access_key }}", "secretKey": "{{ vault_s3_api_secret_key }}" }],
+      "policyNames": ["api-object-io"]
+    },
+    {
+      "name": "garbage-collector",
+      "credentials": [{ "accessKey": "{{ vault_s3_gc_access_key }}", "secretKey": "{{ vault_s3_gc_secret_key }}" }],
+      "policyNames": ["garbage-collector-object-io"]
+    }{% for worker in groups['worker_nodes'] | sort %},
+    {
+      "name": "{{ worker }}",
+      "credentials": [{ "accessKey": "{{ vault_s3_workers[worker].access_key }}", "secretKey": "{{ vault_s3_workers[worker].secret_key }}" }],
+      "policyNames": ["{{ worker }}-attempt-io"]
+    }{% endfor %}
+  ]
+}

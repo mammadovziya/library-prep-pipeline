@@ -1,0 +1,21 @@
+[Unit]
+Description=Library Prep replicated SeaweedFS storage node
+Requires=docker.service wg-quick@wg0.service
+After=docker.service wg-quick@wg0.service network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/library-prep/deploy/storage
+EnvironmentFile=/etc/library-prep/images.env
+EnvironmentFile=/etc/library-prep/storage.env
+ExecStart=/bin/sh -ec '/usr/bin/docker compose --env-file /etc/library-prep/images.env ${STORAGE_COMPOSE_PROFILE:+--profile gateway} up --detach --remove-orphans --wait'
+ExecStop=/usr/bin/docker compose stop --timeout 300
+Restart=on-failure
+RestartSec=15s
+TimeoutStartSec=10min
+TimeoutStopSec=10min
+
+[Install]
+WantedBy=multi-user.target

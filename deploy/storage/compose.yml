@@ -1,0 +1,78 @@
+name: library-prep-storage
+
+services:
+  master:
+    image: ${SEAWEEDFS_IMAGE:?immutable SEAWEEDFS_IMAGE is required}
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - master
+      - -ip=${STORAGE_INTERNAL_IP}
+      - -port=9333
+      - -mdir=/data/master
+      - -peers=10.77.0.2:9333,10.77.0.3:9333,10.77.0.4:9333
+      - -defaultReplication=010
+    volumes:
+      - ${STORAGE_MASTER_PATH}:/data/master
+    stop_grace_period: 1m
+
+  volume:
+    image: ${SEAWEEDFS_IMAGE:?immutable SEAWEEDFS_IMAGE is required}
+    restart: unless-stopped
+    network_mode: host
+    depends_on: [master]
+    command:
+      - volume
+      - -ip=${STORAGE_INTERNAL_IP}
+      - -port=8080
+      - -mserver=10.77.0.2:9333,10.77.0.3:9333,10.77.0.4:9333
+      - -dir=/data/volume
+      - -max=${STORAGE_MAX_VOLUMES}
+      - -dataCenter=primary
+      - -rack=${STORAGE_NODE_NAME}
+    volumes:
+      - ${STORAGE_VOLUME_PATH}:/data/volume
+    stop_grace_period: 5m
+
+  filer:
+    profiles: [gateway]
+    image: ${SEAWEEDFS_IMAGE:?immutable SEAWEEDFS_IMAGE is required}
+    restart: unless-stopped
+    network_mode: host
+    depends_on: [master]
+    command:
+      - filer
+      - -ip=${STORAGE_INTERNAL_IP}
+      - -port=8888
+      - -master=10.77.0.2:9333,10.77.0.3:9333,10.77.0.4:9333
+      - -config=/etc/seaweedfs/filer.toml
+    volumes:
+      - ./filer.toml:/etc/seaweedfs/filer.toml:ro
+      - /etc/library-prep/pki:/pki:ro
+    stop_grace_period: 2m
+
+  s3:
+    profiles: [gateway]
+    image: ${SEAWEEDFS_IMAGE:?immutable SEAWEEDFS_IMAGE is required}
+    restart: unless-stopped
+    network_mode: host
+    depends_on: [filer]
+    command:
+      - s3
+      - -filer=${STORAGE_INTERNAL_IP}:8888
+      - -ip.bind=${STORAGE_INTERNAL_IP}
+      - -port=8332
+      - -port.https=443
+      - -config=/etc/seaweedfs/s3.json
+      - -cert.file=/pki/storage.crt
+      - -key.file=/pki/storage.key
+      - -cacert.file=/pki/ca.crt
+      - -tlsVerifyClientCert=true
+      - -externalUrl=https://${OBJECTS_DOMAIN}
+      - -allowedOrigins=https://${APP_DOMAIN}
+      - -allowDeleteBucketNotEmpty=false
+    volumes:
+      - ./s3.json:/etc/seaweedfs/s3.json:ro
+      - /etc/library-prep/pki:/pki:ro
+    group_add: ["65200"]
+    stop_grace_period: 1m

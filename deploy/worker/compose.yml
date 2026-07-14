@@ -1,0 +1,53 @@
+name: library-prep-worker
+
+services:
+  agent:
+    image: ${AGENT_IMAGE:?immutable AGENT_IMAGE is required}
+    restart: unless-stopped
+    user: "65532:65532"
+    env_file: /etc/library-prep/worker.env
+    environment:
+      ATTEMPT_ROOT: /attempts
+      SANDBOXD_SOCKET: /run/library-prep/sandboxd.sock
+      INTERNAL_CA_FILE: /pki/ca.crt
+      INTERNAL_CERT_FILE: /pki/worker.crt
+      INTERNAL_KEY_FILE: /pki/worker.key
+    volumes:
+      - /srv/library-prep/attempts:/attempts
+      - /run/library-prep/sandboxd.sock:/run/library-prep/sandboxd.sock
+      - /etc/library-prep/pki:/pki:ro
+    group_add: ["65200"]
+    extra_hosts:
+      - "${OBJECTS_DOMAIN}:10.77.0.2"
+      - "${OBJECTS_DOMAIN}:10.77.0.3"
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_UUID}"]
+              capabilities: [gpu]
+    stop_signal: SIGTERM
+    stop_grace_period: 2m
+    networks: [worker]
+
+  node-exporter:
+    image: ${NODE_EXPORTER_IMAGE:?immutable NODE_EXPORTER_IMAGE is required}
+    restart: unless-stopped
+    user: "65532:65532"
+    pid: host
+    network_mode: host
+    command:
+      - --path.rootfs=/host
+      - --web.listen-address=${WORKER_INTERNAL_IP}:9100
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/containers/storage/.+)($|/)
+    volumes:
+      - /:/host:ro,rslave
+    security_opt: [no-new-privileges:true]
+
+networks:
+  worker:
+    driver: bridge

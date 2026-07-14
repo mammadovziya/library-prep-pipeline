@@ -1,0 +1,21 @@
+[Unit]
+Description=Library Prep networked worker agent
+Requires=docker.service wg-quick@wg0.service library-prep-sandboxd.service
+After=docker.service wg-quick@wg0.service library-prep-sandboxd.service network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/library-prep/deploy/worker
+EnvironmentFile=/etc/library-prep/images.env
+EnvironmentFile=/etc/library-prep/worker.env
+ExecStart=/usr/bin/docker compose --env-file /etc/library-prep/images.env up --detach --remove-orphans --wait
+ExecStop=/usr/bin/docker compose stop --timeout 120
+Restart=on-failure
+RestartSec=15s
+TimeoutStartSec=5min
+TimeoutStopSec=5min
+
+[Install]
+WantedBy=multi-user.target

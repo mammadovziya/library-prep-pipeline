@@ -1,0 +1,58 @@
+---
+- name: Configure the private fleet network and host baseline
+  hosts: all
+  become: true
+  roles: [common]
+
+- name: Configure replicated object storage
+  hosts: storage_nodes
+  become: true
+  roles: [storage]
+
+- name: Configure the control plane
+  hosts: control_nodes
+  become: true
+  roles: [control]
+
+- name: Configure restricted chemistry workers
+  hosts: worker_nodes
+  become: true
+  roles: [worker]
+
+- name: Start replicated storage after every storage node is configured
+  hosts: storage_nodes
+  become: true
+  serial: 1
+  tasks:
+    - name: Start storage service
+      ansible.builtin.systemd_service:
+        name: library-prep-storage.service
+        state: started
+
+- name: Start the control plane after backup repositories and storage exist
+  hosts: control_nodes
+  become: true
+  tasks:
+    - name: Start control service
+      ansible.builtin.systemd_service:
+        name: library-prep-control.service
+        state: started
+
+    - name: Start PostgreSQL backup timer
+      ansible.builtin.systemd_service:
+        name: library-prep-backup.timer
+        state: started
+
+- name: Start sandbox launchers and worker agents last
+  hosts: worker_nodes
+  become: true
+  tasks:
+    - name: Start restricted sandbox service
+      ansible.builtin.systemd_service:
+        name: library-prep-sandboxd.service
+        state: started
+
+    - name: Start networked worker agent
+      ansible.builtin.systemd_service:
+        name: library-prep-worker.service
+        state: started

@@ -1,0 +1,56 @@
+---
+- name: Create worker deployment directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /opt/library-prep/deploy/worker, owner: root, group: root, mode: "0755" }
+    - { path: /srv/library-prep/attempts, owner: "65532", group: "65532", mode: "0750" }
+
+- name: Install chemistry AppArmor policy
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../security/chemistry-apparmor.profile"
+    dest: /etc/apparmor.d/library-prep-chemistry
+    mode: "0644"
+  notify: Reload chemistry AppArmor
+
+- name: Install sandbox seccomp policy
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../security/chemistry-seccomp.json"
+    dest: /etc/library-prep/chemistry-seccomp.json
+    mode: "0644"
+
+- name: Install worker services
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../{{ item.src }}"
+    dest: "{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: worker/compose.yml, dest: /opt/library-prep/deploy/worker/compose.yml }
+    - { src: systemd/library-prep-worker.service, dest: /etc/systemd/system/library-prep-worker.service }
+    - { src: systemd/library-prep-sandboxd.service, dest: /etc/systemd/system/library-prep-sandboxd.service }
+
+- name: Install the root-owned sandbox launcher
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/{{ sandboxd_binary_path }}"
+    dest: /usr/local/libexec/library-prep-sandboxd
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Reload systemd for worker services
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Enable restricted sandbox service
+  ansible.builtin.systemd_service:
+    name: library-prep-sandboxd.service
+    enabled: true
+
+- name: Enable networked worker agent
+  ansible.builtin.systemd_service:
+    name: library-prep-worker.service
+    enabled: true

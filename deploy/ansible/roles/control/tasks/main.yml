@@ -1,0 +1,89 @@
+---
+- name: Create control deployment directory
+  ansible.builtin.file:
+    path: /opt/library-prep/deploy/control
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install control project files
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../{{ item }}"
+    dest: "/opt/library-prep/deploy/control/{{ item | basename }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [control/compose.yml, control/Caddyfile, control/migrate.sh, control/init-databases.sh, control/backup.sh, control/backup-init.sh, control/prometheus.yml, control/alerts.yml, control/blackbox.yml]
+
+- name: Install versioned database migrations
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../migrations/"
+    dest: /opt/library-prep/migrations/
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create PostgreSQL backup SSH directory
+  ansible.builtin.file:
+    path: /etc/library-prep/pgbackrest-ssh
+    state: directory
+    owner: "999"
+    group: "999"
+    mode: "0700"
+
+- name: Install pgBackRest SSH identity and pinned host keys
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "/etc/library-prep/pgbackrest-ssh/{{ item.name }}"
+    owner: "999"
+    group: "999"
+    mode: "{{ item.mode }}"
+  loop:
+    - { name: id_ed25519, content: "{{ vault_pgbackrest_private_key }}", mode: "0600" }
+    - { name: known_hosts, content: "{{ vault_pgbackrest_known_hosts }}", mode: "0644" }
+  no_log: true
+
+- name: Render encrypted pgBackRest configuration
+  ansible.builtin.template:
+    src: pgbackrest.conf.j2
+    dest: /etc/library-prep/pgbackrest.conf
+    owner: "999"
+    group: "999"
+    mode: "0640"
+  no_log: true
+
+- name: Render per-service NATS permissions
+  ansible.builtin.template:
+    src: nats.conf.j2
+    dest: /opt/library-prep/deploy/control/nats.conf
+    owner: root
+    group: libraryprep-pki
+    mode: "0640"
+
+- name: Install control systemd unit
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../systemd/library-prep-control.service"
+    dest: /etc/systemd/system/library-prep-control.service
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Install backup systemd units
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../systemd/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop: [library-prep-backup.service, library-prep-backup.timer]
+  notify: Reload systemd
+
+- name: Enable control plane
+  ansible.builtin.systemd_service:
+    name: library-prep-control.service
+    enabled: true
+    daemon_reload: true
+
+- name: Enable PostgreSQL backup timer without starting it before the control plane
+  ansible.builtin.systemd_service:
+    name: library-prep-backup.timer
+    enabled: true
+    daemon_reload: true

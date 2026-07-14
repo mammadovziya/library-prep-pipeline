@@ -1,0 +1,32 @@
+[Unit]
+Description=Library Prep restricted chemistry sandbox launcher
+Requires=docker.service
+After=docker.service local-fs.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/library-prep/sandboxd.env
+ExecStart=/usr/local/libexec/library-prep-sandboxd
+Restart=on-failure
+RestartSec=5s
+RuntimeDirectory=library-prep
+RuntimeDirectoryMode=0750
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+ReadWritePaths=/run/library-prep /srv/library-prep/attempts /var/run/docker.sock
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+SystemCallArchitectures=native
+TimeoutStopSec=60s
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
