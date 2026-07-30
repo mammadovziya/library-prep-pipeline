@@ -1,0 +1,436 @@
+name: library-prep-mscoc6
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?immutable POSTGRES_IMAGE is required}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: library_prep
+      POSTGRES_USER: library_prep
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      AUTHENTIK_DB_PASSWORD: ${AUTHENTIK_DB_PASSWORD:?AUTHENTIK_DB_PASSWORD is required}
+      SEAWEED_FILER_DB_PASSWORD: ${SEAWEED_FILER_DB_PASSWORD:?SEAWEED_FILER_DB_PASSWORD is required}
+      POSTGRES_INITDB_ARGS: --data-checksums
+      PGDATA: /var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_timeout=60s
+      - -c
+      - archive_command=pgbackrest --stanza=library-prep --repo=1 archive-push %p
+    volumes:
+      - /srv/library-prep/postgres:/var/lib/postgresql/data
+      - ./init-databases.sh:/docker-entrypoint-initdb.d/20-platform-databases.sh:ro
+      - /etc/library-prep/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+      - ${BACKUP_MOUNT_PATH:?external BACKUP_MOUNT_PATH is required}:/backup
+      - pgbackrest-spool:/var/spool/pgbackrest
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U library_prep -d library_prep"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    stop_grace_period: 2m
+    networks: [platform]
+
+  backup-init:
+    image: ${POSTGRES_IMAGE:?immutable POSTGRES_IMAGE is required}
+    restart: "no"
+    user: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/usr/local/bin/backup-init"]
+    environment:
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - /srv/library-prep/postgres:/var/lib/postgresql/data:ro
+      - /etc/library-prep/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+      - ${BACKUP_MOUNT_PATH:?external BACKUP_MOUNT_PATH is required}:/backup
+      - ./backup-init.sh:/usr/local/bin/backup-init:ro
+      - pgbackrest-spool:/var/spool/pgbackrest
+    networks: [platform]
+
+  migrate:
+    image: ${POSTGRES_IMAGE:?immutable POSTGRES_IMAGE is required}
+    restart: "no"
+    depends_on:
+      backup-init:
+        condition: service_completed_successfully
+    environment:
+      PGHOST: postgres
+      PGDATABASE: library_prep
+      PGUSER: library_prep
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - ../../migrations:/migrations:ro
+      - ./migrate.sh:/usr/local/bin/platform-migrate:ro
+    entrypoint: ["/bin/bash", "/usr/local/bin/platform-migrate"]
+    networks: [platform]
+
+  nats:
+    image: ${NATS_IMAGE:?immutable NATS_IMAGE is required}
+    restart: unless-stopped
+    command: ["--config", "/etc/nats/nats.conf"]
+    volumes:
+      - nats-data:/data
+      - ./nats.conf:/etc/nats/nats.conf:ro
+      - /etc/library-prep/pki:/etc/library-prep/pki:ro
+    group_add: ["65200"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8222/healthz | grep -q ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    stop_signal: SIGTERM
+    stop_grace_period: 1m
+    networks:
+      platform:
+        aliases: [nats.internal]
+
+  seaweed-master:
+    image: ${SEAWEEDFS_IMAGE:?immutable SEAWEEDFS_IMAGE is required}
+    restart: unless-stopped
+    command:
+      - master
+      - -ip=seaweed-master
+      - -port=9333
+      - -mdir=/data/master
+      - -defaultReplication=000
+    volumes:
+      - /srv/library-prep/seaweed-master:/data/master
+    stop_grace_period: 1m
+    networks: [platform]
+
+  seaweed-volume:
+    image: ${SEAWEEDFS_IMAGE:?immutable SEAWEEDFS_IMAGE is required}
+    restart: unless-stopped
+    depends_on: [seaweed-master]
+    command:
+      - volume
+      - -ip=seaweed-volume
+      - -port=8080
+      - -mserver=seaweed-master:9333
+      - -dir=/data/volume
+      - -max=${STORAGE_MAX_VOLUMES:?STORAGE_MAX_VOLUMES is required}
+      - -dataCenter=mscoc6
+      - -rack=mscoc6
+    volumes:
+      - /srv/library-prep/objects:/data/volume
+    stop_grace_period: 5m
+    networks: [platform]
+
+  seaweed-filer:
+    image: ${SEAWEEDFS_IMAGE:?immutable SEAWEEDFS_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      seaweed-master:
+        condition: service_started
+    command:
+      - filer
+      - -ip=seaweed-filer
+      - -port=8888
+      - -master=seaweed-master:9333
+      - -config=/etc/seaweedfs/filer.toml
+    volumes:
+      - /etc/library-prep/filer.toml:/etc/seaweedfs/filer.toml:ro
+    stop_grace_period: 2m
+    networks: [platform]
+
+  storage:
+    image: ${SEAWEEDFS_IMAGE:?immutable SEAWEEDFS_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      seaweed-filer:
+        condition: service_started
+    command:
+      - s3
+      - -filer=seaweed-filer:8888
+      - -ip.bind=0.0.0.0
+      - -port=8333
+      - -port.https=443
+      - -config=/etc/seaweedfs/s3.json
+      - -cert.file=/pki/storage.crt
+      - -key.file=/pki/storage.key
+      - -cacert.file=/pki/ca.crt
+      - -tlsVerifyClientCert=true
+      - -externalUrl=https://${OBJECTS_DOMAIN}
+      - -allowedOrigins=https://${APP_DOMAIN}
+      - -allowDeleteBucketNotEmpty=false
+    volumes:
+      - /etc/library-prep/s3.json:/etc/seaweedfs/s3.json:ro
+      - /etc/library-prep/pki:/pki:ro
+    group_add: ["65200"]
+    stop_grace_period: 1m
+    networks:
+      platform:
+        aliases: [storage.internal]
+
+  storage-init:
+    image: ${STORAGE_INIT_IMAGE:?immutable STORAGE_INIT_IMAGE is required}
+    restart: "no"
+    depends_on:
+      storage:
+        condition: service_started
+    env_file: /etc/library-prep/storage-init.env
+    environment:
+      INTERNAL_CA_FILE: /pki/ca.crt
+      INTERNAL_CERT_FILE: /pki/storage-init.crt
+      INTERNAL_KEY_FILE: /pki/storage-init.key
+      S3_INTERNAL_URL: https://storage.internal
+      S3_PUBLIC_URL: https://${OBJECTS_DOMAIN}
+    volumes:
+      - /etc/library-prep/pki:/pki:ro
+    group_add: ["65200"]
+    networks: [platform]
+
+  api:
+    image: ${API_IMAGE:?immutable API_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+    env_file: /etc/library-prep/control.env
+    environment:
+      LISTEN_ADDRESS: :8443
+      INTERNAL_CA_FILE: /pki/ca.crt
+      INTERNAL_CERT_FILE: /pki/api.crt
+      INTERNAL_KEY_FILE: /pki/api.key
+      S3_INTERNAL_URL: https://storage.internal
+      S3_PUBLIC_URL: https://${OBJECTS_DOMAIN}
+      ALLOWED_WORKER_NAME: mscoc6
+      GLOBAL_STORAGE_CEILING_BYTES: ${GLOBAL_STORAGE_CEILING_BYTES:?GLOBAL_STORAGE_CEILING_BYTES is required}
+    volumes:
+      - /etc/library-prep/pki:/pki:ro
+    group_add: ["65200"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/service", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    stop_signal: SIGTERM
+    stop_grace_period: 45s
+    networks:
+      platform:
+        aliases: [api.internal]
+
+  scheduler:
+    image: ${SCHEDULER_IMAGE:?immutable SCHEDULER_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+    env_file: /etc/library-prep/control.env
+    environment:
+      INTERNAL_CA_FILE: /pki/ca.crt
+      INTERNAL_CERT_FILE: /pki/scheduler.crt
+      INTERNAL_KEY_FILE: /pki/scheduler.key
+    volumes:
+      - /etc/library-prep/pki:/pki:ro
+    group_add: ["65200"]
+    stop_signal: SIGTERM
+    stop_grace_period: 1m
+    networks: [platform]
+
+  garbage-collector:
+    image: ${GC_IMAGE:?immutable GC_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      storage-init:
+        condition: service_completed_successfully
+    env_file: /etc/library-prep/gc.env
+    environment:
+      INTERNAL_CA_FILE: /pki/ca.crt
+      INTERNAL_CERT_FILE: /pki/gc.crt
+      INTERNAL_KEY_FILE: /pki/gc.key
+      S3_INTERNAL_URL: https://storage.internal
+      S3_ARTIFACT_BUCKET: library-artifacts
+    volumes:
+      - /etc/library-prep/pki:/pki:ro
+    group_add: ["65200"]
+    stop_signal: SIGTERM
+    stop_grace_period: 1m
+    networks: [platform]
+
+  agent:
+    image: ${AGENT_IMAGE:?immutable AGENT_IMAGE is required}
+    restart: unless-stopped
+    user: "65532:65532"
+    depends_on:
+      api:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+    env_file: /etc/library-prep/worker.env
+    environment:
+      ATTEMPT_ROOT: /attempts
+      SANDBOXD_SOCKET: /run/library-prep/sandboxd.sock
+      INTERNAL_CA_FILE: /pki/ca.crt
+      INTERNAL_CERT_FILE: /pki/worker.crt
+      INTERNAL_KEY_FILE: /pki/worker.key
+      INTERNAL_API_URL: https://api.internal:8443
+      NATS_URL: tls://nats.internal:4222
+      S3_INTERNAL_URL: https://storage.internal
+      S3_PUBLIC_URL: https://${OBJECTS_DOMAIN}
+      WORKER_NAME: mscoc6
+      WORKER_MAX_CONCURRENCY: "1"
+    volumes:
+      - /srv/library-prep/attempts:/attempts
+      - /run/library-prep/sandboxd.sock:/run/library-prep/sandboxd.sock
+      - /etc/library-prep/pki:/pki:ro
+    group_add: ["65200"]
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_UUID:?GPU_UUID is required}"]
+              capabilities: [gpu]
+    stop_signal: SIGTERM
+    stop_grace_period: 2m
+    networks: [platform]
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:?immutable PROMETHEUS_IMAGE is required}
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.listen-address=:9090
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    stop_signal: SIGTERM
+    stop_grace_period: 1m
+    networks: [platform]
+
+  blackbox-exporter:
+    image: ${BLACKBOX_EXPORTER_IMAGE:?immutable BLACKBOX_EXPORTER_IMAGE is required}
+    restart: unless-stopped
+    user: "65532:65532"
+    command: ["--config.file=/etc/blackbox/blackbox.yml", "--web.listen-address=:9115"]
+    volumes:
+      - ./blackbox.yml:/etc/blackbox/blackbox.yml:ro
+      - /etc/library-prep/pki:/pki:ro
+    group_add: ["65200"]
+    networks: [platform]
+
+  node-exporter:
+    image: ${NODE_EXPORTER_IMAGE:?immutable NODE_EXPORTER_IMAGE is required}
+    restart: unless-stopped
+    user: "65532:65532"
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --web.listen-address=:9100
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/containers/storage/.+)($|/)
+    volumes:
+      - /:/host:ro,rslave
+    security_opt: [no-new-privileges:true]
+    networks: [platform]
+
+  web:
+    image: ${WEB_IMAGE:?immutable WEB_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    env_file: /etc/library-prep/web.env
+    volumes:
+      - /etc/library-prep/pki:/pki:ro
+    group_add: ["65200"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+    networks: [platform]
+
+  authentik-server:
+    image: ${AUTHENTIK_IMAGE:?immutable AUTHENTIK_IMAGE is required}
+    restart: unless-stopped
+    command: server
+    env_file: /etc/library-prep/authentik.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - authentik-media:/media
+      - authentik-templates:/templates
+    networks: [platform]
+
+  authentik-worker:
+    image: ${AUTHENTIK_IMAGE:?immutable AUTHENTIK_IMAGE is required}
+    restart: unless-stopped
+    command: worker
+    env_file: /etc/library-prep/authentik.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - authentik-media:/media
+      - authentik-templates:/templates
+      - authentik-certs:/certs
+    stop_grace_period: 1m
+    networks: [platform]
+
+  caddy:
+    image: ${CADDY_IMAGE:?immutable CADDY_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      authentik-server:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+      APP_DOMAIN: ${APP_DOMAIN:?APP_DOMAIN is required}
+      AUTH_DOMAIN: ${AUTH_DOMAIN:?AUTH_DOMAIN is required}
+      OBJECTS_DOMAIN: ${OBJECTS_DOMAIN:?OBJECTS_DOMAIN is required}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /etc/library-prep/pki:/etc/library-prep/pki:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    group_add: ["65200"]
+    stop_grace_period: 30s
+    networks: [platform]
+
+networks:
+  platform:
+    driver: bridge
+
+volumes:
+  pgbackrest-spool:
+  nats-data:
+  authentik-media:
+  authentik-templates:
+  authentik-certs:
+  caddy-data:
+  caddy-config:
+  prometheus-data:

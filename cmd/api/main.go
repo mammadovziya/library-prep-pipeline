@@ -65,7 +65,7 @@ func main() {
 		}
 		return objects.Ready(ctx, "library-inputs")
 	}
-	handler := api.NewServer(store, objects, auth, cfg.LeaseDuration, log, ready, cfg.AuthMode == "development").Handler()
+	handler := api.NewServer(store, objects, auth, cfg.LeaseDuration, log, ready, cfg.AuthMode == "development", cfg.AllowedWorkerName).Handler()
 	server := &http.Server{
 		Addr: cfg.ListenAddress, Handler: handler, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 30 * time.Second, IdleTimeout: 75 * time.Second,

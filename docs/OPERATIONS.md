@@ -1,93 +1,117 @@
 # Operations and recovery
 
-## Objectives
+## Service expectations
 
-- Control-plane RTO: four hours.
-- PostgreSQL RPO: five minutes.
-- Object data: two copies on separate hosts, without site-loss guarantee.
-- Completed artifacts: seven-day application retention measured from job completion; native storage lifecycle is a 30-day disaster-cleanup safety net so it cannot race a long-running job.
+- `mscoc6` is the only website job execution host.
+- One worker consumes CPU and GPU tasks with maximum concurrency one.
+- Loss of `mscoc6` stops the website and all execution.
+- PostgreSQL recovery depends on the independently mounted backup filesystem.
+- Local object data has one copy and no host-loss guarantee.
+- Completed artifacts are visible for seven days.
 
 ## Routine checks
 
-Check WireGuard handshakes, clock offset, filesystem reserve, PostgreSQL archive freshness, both backup repositories, JetStream file usage, pending outbox age, expired leases, orphan counts, S3 gateway latency, object replica placement, GPU health, and sandbox failures. Alert on any WAL archive gap approaching five minutes.
+Check:
 
-Never use job, user, molecule, SMILES, or object identifiers as Prometheus labels. Put correlation IDs in bounded logs and PostgreSQL audit/progress records.
+- `systemctl --failed`;
+- free space under `/srv/library-prep`;
+- external backup mount presence and writeability;
+- PostgreSQL WAL archive freshness and last successful backup;
+- JetStream disk usage, pending outbox age, and expired leases;
+- local S3 latency and orphan counts;
+- configured GPU UUID, health, temperature, driver, and unexpected compute PIDs;
+- sandbox failures and scratch/output limit events.
 
-## Private monitoring
+Prometheus listens only on `127.0.0.1:9090`. Reach it through a restricted SSH
+tunnel. Never put job, user, molecule, SMILES, or object identifiers in metric
+labels.
 
-Prometheus retains 15 days of data and is published only on `127.0.0.1:9090` on the control host. Operators reach it through a restricted SSH tunnel; there is no public monitoring route. Node exporters bind only to WireGuard addresses and nftables permits scrapes only from `10.77.0.1`. Blackbox probes use the dedicated monitoring client certificate for API readiness and both S3 gateways.
+## PostgreSQL backups
 
-The initial rules alert on fixed fleet target loss, less than 20 GiB filesystem reserve, and sustained host memory pressure. Connect Prometheus alerts to the organization's approved pager before alpha. Labels are limited to fixed host/service names—never users, jobs, uploads, molecule identifiers, or object keys.
+PostgreSQL uses data checksums, continuous WAL archiving, an archive timeout of
+60 seconds, and encrypted pgBackRest backups under the external mount. The
+systemd timer runs a differential backup daily and a full backup on Sunday.
 
-## PostgreSQL backups and PITR
+Verify:
 
-PostgreSQL runs with data checksums, `archive_mode=on`, a 60-second archive timeout, async pgBackRest spooling, and encrypted repositories on `storage-b` and `storage-c`. The systemd timer runs differential backups daily and full backups each Sunday.
+```bash
+findmnt -n /mnt/library-prep-backup
+systemctl list-timers library-prep-mscoc6-backup.timer
+journalctl -u library-prep-mscoc6-backup.service --since today
+```
 
 Monthly restore rehearsal:
 
-1. Record a target timestamp and verify uninterrupted WAL exists in both repositories.
-2. Stop the isolated restore target; never rehearse over production.
-3. Restore the latest valid base backup from repository 1 with a time target before the marker.
-4. Start PostgreSQL, verify migration version, jobs, outbox, audit hash chain, and Seaweed filer tables.
-5. Repeat from repository 2 at least quarterly.
-6. Record achieved RPO/RTO and remediate any result beyond five minutes/four hours.
+1. Restore to an isolated test PostgreSQL instance, never over production.
+2. Choose a timestamp and verify uninterrupted WAL exists.
+3. Restore the newest valid base backup to that timestamp.
+4. Verify migrations, jobs, outbox, audit chain, and filer metadata.
+5. Record achieved recovery point and recovery time.
 
-Follow the installed pgBackRest/PostgreSQL version syntax; the conceptual restore is:
-
-```bash
-pgbackrest --stanza=library-prep --repo=1 --type=time \
-  --target='2026-07-14 10:15:00+00' --target-action=promote restore
-```
-
-PITR requires an uninterrupted WAL sequence from the chosen base backup. A successful base backup without archive continuity does not satisfy the RPO.
+A successful local backup is not sufficient. The repository must live on a
+filesystem administered independently from `mscoc6`.
 
 ## Total JetStream loss
 
-1. Stop scheduler and agents.
-2. Preserve NATS files for investigation, then start an empty JetStream store.
-3. Start scheduler once with `REBUILD_JETSTREAM_FROM_DB=true`.
-4. It recreates streams/consumers and outbox entries for runnable PostgreSQL tasks.
-5. Remove the flag, restart scheduler normally, then start agents.
-6. Verify terminal tasks were not re-enqueued and no stale attempt can commit.
+1. Stop the platform service.
+2. Preserve the old NATS volume for investigation.
+3. Start an empty JetStream store.
+4. Start the scheduler once with `REBUILD_JETSTREAM_FROM_DB=true`.
+5. Remove the flag and restart normally.
+6. Verify terminal tasks were not re-enqueued and stale attempts cannot commit.
 
-## Rolling worker update
+## Updating the worker
 
-1. Set `workers.scheduling_enabled=false` for one worker.
-2. Wait until it has no running attempt; do not kill a healthy long shard merely to deploy.
-3. Update the pinned agent/chemistry digests and host driver only to an approved release-matrix combination.
-4. Restart sandboxd and the worker Compose project.
-5. The agent waits for an idle GPU, runs the real chemistry qualification, and registers its new digest/driver.
-6. Re-enable scheduling and observe one canary task before continuing.
+1. Set `workers.scheduling_enabled=false` for `mscoc6`.
+2. Wait for the active attempt to finish.
+3. Update only to an approved agent/chemistry digest and driver combination.
+4. Restart sandboxd and the Compose project.
+5. Run the real startup qualification.
+6. Re-enable scheduling and observe one canary job.
 
-The agent forwards SIGTERM and waits; sandboxd sends bounded termination then SIGKILL. Attempt leases and fencing cover forced host loss.
+There is no second worker to absorb traffic during an update, so queued work
+will wait.
 
-## Storage failure
+## Local object-storage loss
 
-One volume/gateway host loss should leave one object copy and the second S3 gateway. Disable chemistry on a degraded storage host by setting `workers.chemistry_enabled=false`. Replace/repair the node, verify cross-rack replica repair, then re-enable. Simultaneous loss of both copies is unrecoverable in alpha; mark affected jobs failed/expired and notify owners explicitly.
+SeaweedFS stores one local copy. A corrupted or lost object volume can destroy
+uploads and completed artifacts even when PostgreSQL is recoverable.
+
+On loss:
+
+1. Stop new job admission.
+2. Preserve the failed volume for investigation.
+3. Restore the platform database if required.
+4. Mark missing jobs/artifacts explicitly failed or expired.
+5. Notify affected users and do not imply that deleted data was recoverable.
+
+Users must download completed outputs they need to retain.
 
 ## Garbage collection
 
-The Go GC runs hourly:
+The Go garbage collector runs hourly:
 
-- Terminal jobs retain their actual input/artifact reservation until verified object deletion; timestamps alone never free capacity.
-- Expired committed artifacts are deleted only after active-download grace.
-- Incomplete uploads are aborted before their row is marked expired. A completed input shared by reruns is deleted only after every referencing job is expired.
-- Failed/stale/cancelled attempt prefixes are removed after 24 hours only if unreferenced.
-- Once per day, the GC lists attempt prefixes and removes prefixes older than 24 hours only when PostgreSQL has no committed artifact reference and no live attempt.
-- Native S3 lifecycle removes one-day abandoned multipart data and serves as a 30-day backstop; PostgreSQL GC owns exact visibility and deletion times.
+- seven-day artifact visibility;
+- active-download grace;
+- abandoned multipart cleanup;
+- 24-hour failed-attempt cleanup;
+- PostgreSQL-authoritative reservation release;
+- daily orphan-prefix reconciliation.
 
-Run a daily reconciliation report comparing committed artifact rows, upload objects, attempt prefixes, active reservations, leases, and pending outbox rows. A database row is never marked cleaned when the storage operation failed.
+Run a daily report comparing committed artifacts, upload objects, attempt
+prefixes, reservations, leases, and pending outbox rows.
 
 ## Fault-injection checklist
 
-- Kill agent during download, sandbox execution, upload, CAS commit, and just before ACK.
-- Reboot control, every storage node, and one worker.
-- Partition worker↔API, worker↔NATS, worker↔S3, filer↔PostgreSQL, and storage peers.
-- Destroy NATS and reconstruct it.
-- Race cancellation against final commit.
-- Redeliver an old fencing token after a newer attempt commits.
-- Fill scratch/output to one byte below and above the hard cap.
+- Kill the sole agent during download, chemistry, upload, commit, and ACK.
+- Reboot `mscoc6`.
+- Stop PostgreSQL, NATS, S3, API, and sandboxd independently.
+- Destroy and reconstruct NATS.
+- Race cancellation with final commit.
+- Redeliver an old fencing token.
+- Fill scratch/output immediately below and above limits.
+- Unmount the backup filesystem and prove deployment/backup fails loudly.
 - Leave multipart uploads and uncommitted prefixes, then verify cleanup.
-- Run large range downloads across artifact expiration.
 
-No release gate passes from design review alone; retain command output, timestamps, metrics, and restored checksums as evidence.
+Design review alone does not pass a release gate. Retain commands, timestamps,
+metrics, logs, and restored checksums.

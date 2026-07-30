@@ -1,0 +1,13 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Reload nftables
+  ansible.builtin.systemd_service:
+    name: nftables
+    state: restarted
+
+- name: Reload chemistry AppArmor
+  ansible.builtin.command: apparmor_parser -r /etc/apparmor.d/library-prep-chemistry
+  changed_when: true

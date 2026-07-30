@@ -48,13 +48,13 @@ export default async function Home() {
         <div>
           <p className="eyebrow"><ShieldCheck size={15} /> Trusted inputs only</p>
           <h1>Prepare screening libraries<br />without losing provenance.</h1>
-          <p className="lede">A fenced, reproducible pipeline for profiling, filtering, variant generation and GPU conformers across one RTX 5090 and five RTX 4090 workers.</p>
+          <p className="lede">A fenced, reproducible pipeline for profiling, filtering, variant generation and GPU conformers. Every submitted job is queued and executed on the approved mscoc6 GPU host.</p>
         </div>
         <div className="systemCard">
-          <div className="systemHead"><span>Fleet posture</span><span className={apiAvailable ? "online" : "offline"}>{apiAvailable ? "READY" : "DEGRADED"}</span></div>
-          <div className="systemMetric"><span>Compute</span><strong>6 GPUs</strong></div>
-          <div className="systemMetric"><span>Storage ceiling</span><strong>800 GB</strong></div>
-          <div className="systemMetric"><span>Data copies</span><strong>2 hosts</strong></div>
+          <div className="systemHead"><span>Service posture</span><span className={apiAvailable ? "online" : "offline"}>{apiAvailable ? "READY" : "DEGRADED"}</span></div>
+          <div className="systemMetric"><span>Compute</span><strong>mscoc6 only</strong></div>
+          <div className="systemMetric"><span>Scheduling</span><strong>Queued</strong></div>
+          <div className="systemMetric"><span>Storage</span><strong>Quota enforced</strong></div>
           <div className="systemMetric"><span>Input policy</span><strong>Non-confidential</strong></div>
         </div>
       </section>
@@ -85,7 +85,7 @@ export default async function Home() {
 
       <section className="principles">
         <article><Server /><h3>Fenced execution</h3><p>Every task runs under a short lease. Stale attempts cannot publish or replace a winning result.</p></article>
-        <article><Gauge /><h3>Shared-GPU aware</h3><p>Three idle samples are required before work starts. Colleague processes trigger a safe deferral.</p></article>
+        <article><Gauge /><h3>mscoc6 queue</h3><p>Jobs wait when the approved GPU is busy. Three idle samples are required before any chemistry work starts.</p></article>
         <article><HardDrive /><h3>Peak reserved</h3><p>Admission counts inputs, working data, finalization and retries—not only the final artifact.</p></article>
         <article><Activity /><h3>Reproducible</h3><p>Image digest, packages, seeds, GPU, driver, parameters and checksums travel with every manifest.</p></article>
       </section>

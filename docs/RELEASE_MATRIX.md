@@ -10,7 +10,7 @@ Pin the final multi-architecture image digest, not only the tag. Values below ar
 | NATS Server | 2.14.0 |
 | Caddy | 2.11.4 |
 | Authentik | 2026.5.2 server + worker, no Docker socket |
-| SeaweedFS | 4.29, Apache-2.0 |
+| SeaweedFS | 4.29, single master/volume/filer/S3 instance with replication `000` |
 | Prometheus / node exporter / blackbox exporter | 3.12.0 / 1.11.1 / 0.28.0 |
 | AWS Go S3 transfer manager | 0.3.2; Seaweed multipart/conditional-write qualification required |
 | Python | 3.11.13 |
@@ -19,7 +19,8 @@ Pin the final multi-architecture image digest, not only the tag. Values below ar
 | Dimorphite-DL | 2.0.2 |
 | PyArrow / pandas / NumPy | 21.0.0 / 2.3.2 / 2.2.6 |
 | CUDA runtime candidate | 12.8.1 |
-| GPUs | RTX 4090 (`sm_89`) and RTX 5090 (`sm_120`) |
+| GPU profiles present in code | RTX 4090 (`sm_89`) and RTX 5090 (`sm_120`) |
+| Production GPU | The exact card and UUID installed in `mscoc6`; it must have a matching qualified profile |
 
 Record for each promoted release:
 
@@ -31,7 +32,11 @@ Record for each promoted release:
 
 ## Startup qualification
 
-Every worker waits for an idle GPU, then runs the pinned chemistry image through sandboxd. The qualification uses real nvMolKit ETKDG and MMFF kernels on valid, charged, aromatic, and stereochemical molecules; checks conformer counts, nonzero coordinates, topology/stereochemistry, and output production. Failure prevents registration.
+The sole `mscoc6` worker waits for an idle GPU, then runs the pinned chemistry
+image through sandboxd. The qualification uses real nvMolKit ETKDG and MMFF
+kernels on valid, charged, aromatic, and stereochemical molecules; checks
+conformer counts, nonzero coordinates, topology/stereochemistry, and output
+production. Failure prevents registration.
 
 This smoke qualification does not replace the cross-generation release corpus.
 

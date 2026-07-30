@@ -1,47 +1,52 @@
 # Release gates
 
-Status legend: implemented means source/configuration exists; qualified means evidence from the actual fleet has passed. This repository alone cannot mark an operational test qualified.
+Implementation means source/configuration exists. Qualification requires
+retained evidence from the real `mscoc6` deployment.
 
 ## Controlled alpha
 
-| Gate | Implementation | Fleet evidence |
+| Gate | Implementation | Host evidence |
 |---|---|---|
-| WireGuard names, firewall, exact flows | Implemented in Ansible | Required |
-| External browser multipart/checksum/range test | Implemented paths | Required |
-| Transactional outbox and stable NATS message ID | Implemented | Fault test required |
+| Sole worker identity is `mscoc6` | Configured | Required |
+| Worker maximum concurrency is one | Configured | Queue test required |
+| No cluster fan-out or other schedulable workers | Configured | DB/NATS audit required |
+| Dedicated non-login UID/GID 65532 owns attempts | Implemented in Ansible | Permission audit required |
+| Only TCP 80/443 public; internal services private | Implemented | External port scan required |
+| Upload/checksum/range/resume flow | Implemented | Browser/S3 suite required |
 | Leases, fencing, attempt prefixes, CAS commit | Implemented | Stale-attempt test required |
-| Explicit DLQ advisory handling and reconciliation | Implemented | MaxDeliver test required |
-| SeaweedFS 4.29, two copies, lifecycle, two gateways | Implemented | S3 suite/replica audit required |
-| pgBackRest two-host WAL/base backup | Implemented | Bare-metal PITR required |
-| NATS reconstruction from PostgreSQL | Implemented | Total-loss drill required |
-| Offline runner and narrow sandboxd | Implemented | Kernel containment test required |
-| Server-owned peak reservations and hard counters | Implemented | Boundary/fill tests required |
-| Admin MFA and distinct service credentials | Configured design | Authentik/operator verification required |
-| RTX 4090/5090 startup chemistry smoke | Implemented | Every host required |
+| Queue loss rebuild from PostgreSQL | Implemented | Total-loss drill required |
+| Single-node S3 and seven-day retention | Implemented | Capacity/cleanup tests required |
+| External encrypted PostgreSQL backup | Implemented | Point-in-time restore required |
+| Offline sandbox and narrow sandboxd | Implemented | Kernel containment test required |
+| Server-owned reservations and hard counters | Implemented | Boundary/fill tests required |
+| Admin MFA and distinct service credentials | Designed | Authentik verification required |
+| Actual mscoc6 GPU profile | Parameterized | Scientific qualification required |
 
-Alpha remains blocked until every “required” item has retained evidence and the operator accepts four-hour RTO, five-minute PostgreSQL RPO, and non-confidential-input limitations.
+Alpha remains blocked until every required item has evidence and the operator
+accepts the single-host website/execution failure domain and single-copy object
+storage.
 
 ## Public registration
 
-- Threat model review and independent penetration test.
-- Verified email, CAPTCHA, IP/account/global rate limits, suspension tooling.
-- Compression, row/field, molecular expansion, output, and multipart bomb tests.
-- Privacy, retention, object non-redundancy, and prohibited-data notices.
-- Cross-user upload/job/artifact/presigned-URL authorization tests.
-- Worker compromise containment and credential-exfiltration tests.
-- Prolonged partitions and monitored restore schedule.
-- Image/package advisory ownership and documented patch SLA.
-- Caddy benchmark: at least 80% measured NIC line rate, API p95 under 500 ms during six object transfers, flat memory relative to object size, working ranges/resume.
+- Independent threat-model review and penetration test.
+- Verified email, CAPTCHA, per-IP/account limits, and suspension tooling.
+- Compression, molecular expansion, output, and multipart bomb tests.
+- Privacy, retention, single-copy storage, and prohibited-data notices.
+- Cross-user job, upload, artifact, and presigned-URL authorization tests.
+- Service-account and sandbox escape tests.
+- Security-update ownership and patch SLA.
+- Measured upload/download throughput without memory growth.
 
-## Five-million-record jobs
+Do not enable self-registration during the controlled alpha.
 
-- Docking preset with one conformer finishes within 12 execution hours while all six GPUs are genuinely idle.
-- Peak—not final—storage remains below the calibrated logical ceiling.
-- Worst-case expansion corpus and cost-weighted sharding pass.
-- RTX 4090/5090 exact-invariant and numerical-tolerance corpus passes.
-- Per-molecule seed derivation/retry reproducibility is demonstrated.
-- Storage/chemistry coexistence causes no OOM/swap, less than 20% throughput loss, and less than 2× p95 S3 latency; otherwise storage nodes become storage-only.
-- Simultaneous transfers meet the network target.
-- Fault injection leaves no stale commit, multipart upload, attempt prefix, reservation, lease, claim, or pending outbox orphan.
+## Large-job qualification
 
-Until these pass, enforce smaller alpha limits even though the schema can represent larger jobs.
+- Define the maximum supported compound count from measured `mscoc6`
+  throughput, not from the superseded six-GPU estimate.
+- Demonstrate the largest supported job finishes within the agreed queue and
+  wall-clock limit on the sole GPU.
+- Prove peak storage, scratch, and final output remain within the calibrated
+  ceiling.
+- Verify recursive shard splitting cannot create unbounded queue or disk use.
+- Demonstrate retry reproducibility on the actual GPU and driver.
+- Confirm a large job does not make the website, API, or storage unusable.

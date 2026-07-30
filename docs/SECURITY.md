@@ -4,7 +4,11 @@
 
 Alpha users are approved manually and may submit only trusted, non-confidential inputs. This is still treated as hostile parser input: native RDKit, nvMolKit, CSV, Parquet, gzip, and CUDA code run only inside a fresh offline container.
 
-The main threats are parser/native-code compromise, credential theft, cross-user object access, stale workers, storage exhaustion, expansion/compression bombs, public abuse, administrator compromise, and loss of non-redundant infrastructure.
+The website and every submitted job run on `mscoc6`. No other computer is a
+schedulable worker. The main threats are parser/native-code compromise,
+credential theft, cross-user object access, stale workers, storage exhaustion,
+expansion/compression bombs, public abuse, administrator compromise, and loss
+of this single non-redundant host.
 
 ## Isolation
 
@@ -31,9 +35,20 @@ The supplied seccomp/AppArmor profiles are release artifacts, not paper controls
 
 Authentik is the OIDC authority. The API validates issuer, audience, signature, expiry, not-before, immutable subject, role, and current account status on every request. A disabled account loses API access even if an encrypted browser session remains.
 
+The host has a dedicated, non-login `libraryprep` account with fixed UID/GID
+65532. Attempt files and the networked agent run under that identity; they do
+not use an individual researcher's account, home directory, SSH keys, or
+credentials. Root is retained only for host administration and the small
+root-owned sandbox launcher.
+
 Web mutations require same-origin plus a double-bound CSRF token. The browser never receives internal service keys. Every object key is server generated, and upload completion independently verifies owner, job state, key, part set, size, and a streamed whole-object SHA-256.
 
-Internal API calls require mTLS and bind certificate CN to worker UUID. NATS uses mTLS identity mapping and per-subject permissions. Every worker has a distinct S3 identity with advanced policies limited to object reads and attempt-prefix writes; delete, list, and administration are denied. Offline sandboxes receive no identity. GC/storage-init/admin credentials are separate.
+Internal API calls require mTLS and bind certificate CN to worker UUID. The API
+allowlists the sole worker name `mscoc6`; NATS maps only that worker certificate
+to consumer permissions. The worker has an S3 identity limited to object reads
+and attempt-prefix writes; delete, list, and administration are denied. Offline
+sandboxes receive no identity. GC, storage-init, API, Caddy, and administration
+credentials are separate.
 
 Initial account quotas are one active/one queued job, two multipart uploads, 20 GB upload/day, 100 GB retained artifacts, 200 GB signed download/day, 24 GPU-hours/day, and 10,000 signed parts/day. Server-owned storage admission prevents browser under-reservation.
 
@@ -47,4 +62,6 @@ Object visibility is seven days. Expiration blocks new URLs, honors active-downl
 
 Do not enable self-registration until verified email, CAPTCHA/bot defenses, per-IP limits, suspension tooling, privacy/non-redundancy notices, security-update ownership, compression/expansion bomb tests, cross-user authorization tests, prolonged partitions, worker compromise containment, and an independent penetration test have passed.
 
-No claim should imply protection against simultaneous multi-node/site loss, or suitability for HIPAA, GxP, regulated, or confidential proprietary chemistry.
+No claim should imply high availability, protection from loss of `mscoc6` and
+its local object disk, or suitability for HIPAA, GxP, regulated, or
+confidential proprietary chemistry.

@@ -1,0 +1,43 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    platform: library-prep-alpha
+    execution_host: mscoc6
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+
+  - job_name: host
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels: { host: mscoc6 }
+
+  - job_name: api_health
+    metrics_path: /probe
+    params: { module: [api_mtls] }
+    static_configs:
+      - targets: ["https://api.internal:8443/readyz"]
+        labels: { service: api }
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: storage_health
+    metrics_path: /probe
+    params: { module: [s3_mtls] }
+    static_configs:
+      - targets: ["https://storage.internal/"]
+        labels: { service: storage }
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

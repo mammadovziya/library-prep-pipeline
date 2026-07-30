@@ -23,6 +23,7 @@ type Config struct {
 	InternalCAFile       string
 	InternalCertFile     string
 	InternalKeyFile      string
+	AllowedWorkerName    string
 	GlobalStorageCeiling int64
 	LeaseDuration        time.Duration
 	HeartbeatInterval    time.Duration
@@ -41,6 +42,7 @@ func LoadConfig(service string) (Config, error) {
 		InternalCAFile:       os.Getenv("INTERNAL_CA_FILE"),
 		InternalCertFile:     os.Getenv("INTERNAL_CERT_FILE"),
 		InternalKeyFile:      os.Getenv("INTERNAL_KEY_FILE"),
+		AllowedWorkerName:    strings.TrimSpace(os.Getenv("ALLOWED_WORKER_NAME")),
 		GlobalStorageCeiling: envInt64("GLOBAL_STORAGE_CEILING_BYTES", DefaultGlobalStorageCeiling),
 		LeaseDuration:        envDuration("TASK_LEASE_DURATION", DefaultLeaseDuration),
 		HeartbeatInterval:    envDuration("TASK_HEARTBEAT_INTERVAL", DefaultHeartbeatInterval),

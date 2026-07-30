@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Library Prep PostgreSQL backup from mscoc6
+
+[Timer]
+OnCalendar=*-*-* 02:15:00 UTC
+Persistent=true
+RandomizedDelaySec=15m
+Unit=library-prep-mscoc6-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=Library Prep encrypted PostgreSQL backup from mscoc6
+Requires=library-prep-mscoc6.service
+After=library-prep-mscoc6.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/library-prep/deploy/mscoc6
+EnvironmentFile=/etc/library-prep/images.env
+EnvironmentFile=/etc/library-prep/domains.env
+EnvironmentFile=/etc/library-prep/compose.env
+ExecStart=/bin/bash /opt/library-prep/deploy/mscoc6/backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

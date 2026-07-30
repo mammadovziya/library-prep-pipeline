@@ -1,0 +1,231 @@
+---
+- name: Install the mscoc6 host baseline
+  ansible.builtin.apt:
+    name: [nftables, chrony, apparmor, docker.io, docker-compose-v2, ca-certificates]
+    state: present
+    update_cache: true
+
+- name: Create the fixed PKI reader group
+  ansible.builtin.group:
+    name: libraryprep-pki
+    gid: 65200
+    system: true
+    state: present
+
+- name: Create the dedicated Library Prep service group
+  ansible.builtin.group:
+    name: libraryprep
+    gid: 65532
+    system: true
+    state: present
+
+- name: Create the dedicated non-login Library Prep service account
+  ansible.builtin.user:
+    name: libraryprep
+    uid: 65532
+    group: libraryprep
+    groups: libraryprep-pki
+    home: /var/lib/libraryprep
+    shell: /usr/sbin/nologin
+    create_home: true
+    system: true
+    state: present
+
+- name: Create platform directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /opt/library-prep/deploy/mscoc6, owner: root, group: root, mode: "0755" }
+    - { path: /opt/library-prep/migrations, owner: root, group: root, mode: "0755" }
+    - { path: /etc/library-prep, owner: root, group: root, mode: "0750" }
+    - { path: /etc/library-prep/pki, owner: root, group: libraryprep-pki, mode: "0750" }
+    - { path: /srv/library-prep, owner: root, group: libraryprep, mode: "0750" }
+    - { path: /srv/library-prep/attempts, owner: libraryprep, group: libraryprep, mode: "0750" }
+    - { path: /srv/library-prep/objects, owner: root, group: libraryprep, mode: "0750" }
+    - { path: /srv/library-prep/seaweed-master, owner: root, group: libraryprep, mode: "0750" }
+    - { path: /srv/library-prep/postgres, owner: "999", group: "999", mode: "0700" }
+
+- name: Verify that the external backup filesystem is mounted
+  ansible.builtin.command: "findmnt -n {{ backup_mount_path }}"
+  register: backup_mount
+  changed_when: false
+  failed_when: backup_mount.rc != 0
+
+- name: Create the PostgreSQL repository on the external backup filesystem
+  ansible.builtin.file:
+    path: "{{ backup_mount_path }}/postgres"
+    state: directory
+    owner: "999"
+    group: "999"
+    mode: "0700"
+
+- name: Install Vault-managed service environment files
+  ansible.builtin.copy:
+    content: "{{ item.value }}"
+    dest: "/etc/library-prep/{{ item.key }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ (vault_environment_files | default({})) | dict2items }}"
+  no_log: true
+
+- name: Install Vault-managed internal PKI material
+  ansible.builtin.copy:
+    content: "{{ item.value }}"
+    dest: "/etc/library-prep/pki/{{ item.key }}"
+    owner: root
+    group: libraryprep-pki
+    mode: "{{ '0640' if item.key.endswith('.key') else '0644' }}"
+  loop: "{{ (vault_pki_files | default({})) | dict2items }}"
+  no_log: true
+
+- name: Install the single-host Compose project
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../mscoc6/{{ item }}"
+    dest: "/opt/library-prep/deploy/mscoc6/{{ item }}"
+    owner: root
+    group: root
+    mode: "{{ '0755' if item.endswith('.sh') else '0644' }}"
+  loop:
+    - compose.yml
+    - Caddyfile
+    - prometheus.yml
+    - blackbox.yml
+    - alerts.yml
+    - init-databases.sh
+    - migrate.sh
+    - backup-init.sh
+    - backup.sh
+
+- name: Render the one-worker NATS policy
+  ansible.builtin.template:
+    src: nats.conf.j2
+    dest: /opt/library-prep/deploy/mscoc6/nats.conf
+    owner: root
+    group: libraryprep-pki
+    mode: "0640"
+
+- name: Render SeaweedFS filer metadata configuration
+  ansible.builtin.template:
+    src: filer.toml.j2
+    dest: /etc/library-prep/filer.toml
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Render the one-worker S3 identities
+  ansible.builtin.template:
+    src: s3.json.j2
+    dest: /etc/library-prep/s3.json
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Render external pgBackRest repository configuration
+  ansible.builtin.template:
+    src: pgbackrest.conf.j2
+    dest: /etc/library-prep/pgbackrest.conf
+    owner: "999"
+    group: "999"
+    mode: "0600"
+  no_log: true
+
+- name: Install versioned database migrations
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../migrations/"
+    dest: /opt/library-prep/migrations/
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install chemistry sandbox policies
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../security/{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { src: chemistry-apparmor.profile, dest: /etc/apparmor.d/library-prep-chemistry }
+    - { src: chemistry-seccomp.json, dest: /etc/library-prep/chemistry-seccomp.json }
+  notify: Reload chemistry AppArmor
+
+- name: Install the root-owned sandbox launcher
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/{{ sandboxd_binary_path }}"
+    dest: /usr/local/libexec/library-prep-sandboxd
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install mscoc6 systemd units
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../systemd/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - library-prep-sandboxd.service
+    - library-prep-mscoc6.service
+    - library-prep-mscoc6-backup.service
+    - library-prep-mscoc6-backup.timer
+  notify: Reload systemd
+
+- name: Render the public-only firewall policy
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Reload nftables
+
+- name: Enable baseline services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [docker, chrony, nftables]
+
+- name: Verify the NVIDIA driver sees the mscoc6 GPU
+  ansible.builtin.command: nvidia-smi -L
+  register: nvidia_smi
+  changed_when: false
+  failed_when: nvidia_smi.rc != 0
+
+- name: Verify the NVIDIA Container Toolkit is installed
+  ansible.builtin.command: nvidia-ctk --version
+  register: nvidia_ctk
+  changed_when: false
+  failed_when: nvidia_ctk.rc != 0
+
+- name: Apply security policy and systemd changes before service startup
+  ansible.builtin.meta: flush_handlers
+
+- name: Start the restricted sandbox launcher
+  ansible.builtin.systemd_service:
+    name: library-prep-sandboxd.service
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Manage the mscoc6 platform startup state
+  ansible.builtin.systemd_service:
+    name: library-prep-mscoc6.service
+    enabled: "{{ platform_start_enabled | default(false) | bool }}"
+    state: "{{ 'started' if (platform_start_enabled | default(false) | bool) else 'stopped' }}"
+    daemon_reload: true
+
+- name: Manage the external PostgreSQL backup timer
+  ansible.builtin.systemd_service:
+    name: library-prep-mscoc6-backup.timer
+    enabled: "{{ platform_start_enabled | default(false) | bool }}"
+    state: "{{ 'started' if (platform_start_enabled | default(false) | bool) else 'stopped' }}"
+    daemon_reload: true

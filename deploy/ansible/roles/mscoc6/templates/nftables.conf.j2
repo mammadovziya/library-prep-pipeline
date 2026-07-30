@@ -1,0 +1,19 @@
+#!/usr/sbin/nft -f
+table inet library_prep_filter
+delete table inet library_prep_filter
+
+table inet library_prep_filter {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    ct state established,related accept
+    iifname "lo" accept
+    ip protocol icmp accept
+    ip6 nexthdr ipv6-icmp accept
+    ip saddr {{ admin_network }} tcp dport 22 accept
+    tcp dport { 80, 443 } accept
+  }
+
+  chain output {
+    type filter hook output priority 0; policy accept;
+  }
+}

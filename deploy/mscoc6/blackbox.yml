@@ -1,0 +1,28 @@
+modules:
+  api_mtls:
+    prober: http
+    timeout: 5s
+    http:
+      valid_status_codes: [200]
+      method: GET
+      preferred_ip_protocol: ip4
+      tls_config:
+        ca_file: /pki/ca.crt
+        cert_file: /pki/monitoring.crt
+        key_file: /pki/monitoring.key
+        server_name: api.internal
+        min_version: TLS13
+
+  s3_mtls:
+    prober: http
+    timeout: 5s
+    http:
+      valid_status_codes: [403]
+      method: GET
+      preferred_ip_protocol: ip4
+      tls_config:
+        ca_file: /pki/ca.crt
+        cert_file: /pki/monitoring.crt
+        key_file: /pki/monitoring.key
+        server_name: storage.internal
+        min_version: TLS13

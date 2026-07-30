@@ -1,0 +1,22 @@
+[Unit]
+Description=Library Prep single-host platform on mscoc6
+Requires=docker.service library-prep-sandboxd.service
+After=docker.service library-prep-sandboxd.service network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/library-prep/deploy/mscoc6
+EnvironmentFile=/etc/library-prep/images.env
+EnvironmentFile=/etc/library-prep/domains.env
+EnvironmentFile=/etc/library-prep/compose.env
+ExecStart=/usr/bin/docker compose --env-file /etc/library-prep/images.env --env-file /etc/library-prep/domains.env --env-file /etc/library-prep/compose.env up --detach --remove-orphans --wait
+ExecStop=/usr/bin/docker compose --env-file /etc/library-prep/images.env --env-file /etc/library-prep/domains.env --env-file /etc/library-prep/compose.env stop --timeout 300
+Restart=on-failure
+RestartSec=15s
+TimeoutStartSec=15min
+TimeoutStopSec=10min
+
+[Install]
+WantedBy=multi-user.target

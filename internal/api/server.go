@@ -29,10 +29,20 @@ type Server struct {
 	log                 *slog.Logger
 	ready               func(context.Context) error
 	internalDevelopment bool
+	allowedWorkerName   string
 }
 
-func NewServer(store *platform.Store, objects *objectstore.Client, auth *Authenticator, lease time.Duration, log *slog.Logger, ready func(context.Context) error, internalDevelopment bool) *Server {
-	return &Server{store: store, objects: objects, auth: auth, lease: lease, log: log, ready: ready, internalDevelopment: internalDevelopment}
+func NewServer(store *platform.Store, objects *objectstore.Client, auth *Authenticator, lease time.Duration, log *slog.Logger, ready func(context.Context) error, internalDevelopment bool, allowedWorkerName string) *Server {
+	return &Server{
+		store:               store,
+		objects:             objects,
+		auth:                auth,
+		lease:               lease,
+		log:                 log,
+		ready:               ready,
+		internalDevelopment: internalDevelopment,
+		allowedWorkerName:   strings.TrimSpace(allowedWorkerName),
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -572,7 +582,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 		identity = r.TLS.PeerCertificates[0].Subject.CommonName
 	}
-	if !s.internalDevelopment && (identity != req.Name || !strings.HasPrefix(identity, "worker-")) {
+	if !s.internalDevelopment && !workerIdentityAllowed(identity, req.Name, s.allowedWorkerName) {
 		writeProblem(w, http.StatusForbidden, "worker_identity_mismatch", "certificate identity does not match worker name")
 		return
 	}
@@ -581,6 +591,16 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "registered"})
+}
+
+func workerIdentityAllowed(identity, requestedName, allowedName string) bool {
+	if identity != requestedName {
+		return false
+	}
+	if allowedName != "" {
+		return identity == allowedName
+	}
+	return strings.HasPrefix(identity, "worker-")
 }
 
 func (s *Server) internalOnly(next http.Handler) http.Handler {

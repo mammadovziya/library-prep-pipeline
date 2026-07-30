@@ -1,96 +1,237 @@
-# Seven-host deployment
+# Deploying on mscoc6
 
-## 1. Host baseline
+This is the current deployment. The retired seven-host Compose projects are
+reference material only.
 
-Use supported Ubuntu LTS hosts with synchronized clocks, Docker Engine/Compose v2, the NVIDIA container toolkit on compute nodes, AppArmor, WireGuard, nftables, and a restricted operations account. Assign the inventory in `deploy/ansible/inventory/example.yml` to exactly one control host, one RTX 5090 worker, and five RTX 4090 workers. The three largest compute volumes also receive `storage` roles.
+## 1. Confirm host and network ownership
 
-Public DNS:
+Before changing the host, obtain:
 
-```text
-app.example.org      -> public control IP
-auth.example.org     -> public control IP
-objects.example.org  -> public control IP
+- the approved SSH administration account and source network;
+- permission to publish the three HTTPS DNS names;
+- the exact GPU UUID and model on `mscoc6`;
+- a mounted departmental backup filesystem that is physically independent of
+  the host;
+- the approved container registry and external alert destination.
+
+Only TCP 80/443 is public. SSH is restricted to `admin_network`. No cluster node
+other than `mscoc6` is registered as a worker.
+
+## 2. Prepare the host
+
+Use a supported Ubuntu LTS release with synchronized time, AppArmor, Docker
+Engine/Compose v2, the NVIDIA driver, and NVIDIA Container Toolkit.
+
+Verify before applying Ansible:
+
+```bash
+nvidia-smi -L
+nvidia-ctk --version
+docker info
+findmnt -n /mnt/library-prep-backup
 ```
 
-The Ansible host template maps `objects.example.org` privately to both gateway WireGuard IPs. Storage certificates must contain `storage.internal`, `storage-a.internal`, `storage-b.internal`, and the public object hostname as SANs.
+The playbook fails if the GPU tooling or external backup mount is absent.
 
-## 2. Build and pin artifacts
+The playbook creates a non-login account named `libraryprep` with UID/GID
+65532. Do not create jobs beneath a personal home directory.
 
-Build on a trusted Linux builder and scan before promotion:
+## 3. Build and pin release artifacts
+
+Build on a trusted Linux builder:
 
 ```bash
 docker build -f docker/postgres.Dockerfile -t registry.internal/library-prep-postgres:18.4 .
 for service in api scheduler gc storageinit; do
-  docker build -f docker/go.Dockerfile --build-arg SERVICE=$service -t registry.internal/library-prep-$service:candidate .
+  docker build -f docker/go.Dockerfile --build-arg SERVICE=$service \
+    -t registry.internal/library-prep-$service:candidate .
 done
 docker build -f docker/agent.Dockerfile -t registry.internal/library-prep-agent:candidate .
 docker build -f docker/chemistry.Dockerfile -t registry.internal/library-prep-chemistry:candidate .
 docker build -f docker/web.Dockerfile -t registry.internal/library-prep-web:candidate .
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o build/linux-amd64/library-prep-sandboxd ./cmd/sandboxd
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+  -o build/linux-amd64/library-prep-sandboxd ./cmd/sandboxd
 ```
 
-Resolve every base and final image to a registry digest. Populate `images.env` with `name@sha256:...`; mutable tags are rejected by release review even though `.env.example` shows the intended version family.
+Scan and test every image, push it, and resolve it to
+`name@sha256:...`. Mutable tags are not production inputs.
 
-## 3. Vault inputs
+## 4. Create production inventory
 
-Create encrypted `group_vars`/`host_vars`, never plaintext repository files. The common role consumes:
+Copy:
 
-- `vault_wireguard_private_key` and every peer public key.
-- `vault_environment_files`: a mapping of filename to complete file content.
-- `vault_pki_files`: a per-host mapping of certificate/key filename to PEM content.
-- Per-service S3 keys, PostgreSQL/Authenik secrets, OIDC secret, session secret, pgBackRest cipher passphrases, and backup SSH material.
+```bash
+cp deploy/ansible/inventory/example.yml \
+   deploy/ansible/inventory/production.yml
+```
 
-Required environment files:
+Replace the example host address, `admin_network`, backup mount, GPU UUID, and
+qualified GPU profile. Leave `platform_start_enabled: false` for the first
+Ansible pass.
 
-| Host | Files |
+If the card is not an RTX 4090 or RTX 5090, stop and add a real profile plus
+scientific qualification. Do not disguise another card as a supported model.
+
+## 5. Prepare Vault inputs
+
+Use encrypted `group_vars/all/vault.yml`. The playbook expects
+`vault_environment_files`, a mapping from filename to complete file content.
+
+Required files:
+
+| File | Purpose |
 |---|---|
-| Control | `images.env`, `domains.env`, `control-compose.env`, `control.env`, `gc.env`, `storage-init.env`, `web.env`, `authentik.env` |
-| Worker | `images.env`, `worker.env`, `sandboxd.env` |
-| Storage | `images.env`, `storage.env` |
+| `images.env` | Immutable image digests |
+| `domains.env` | `APP_DOMAIN`, `AUTH_DOMAIN`, `OBJECTS_DOMAIN`, `ACME_EMAIL` |
+| `compose.env` | Compose-time DB passwords, GPU UUID, backup mount, storage ceiling and volume count |
+| `control.env` | PostgreSQL, NATS, OIDC, API S3 identity |
+| `gc.env` | PostgreSQL and GC-only S3 identity |
+| `storage-init.env` | Storage administrator S3 identity |
+| `worker.env` | Sole `mscoc6` worker identity, GPU profile and worker S3 identity |
+| `web.env` | Session secret, OIDC endpoints, API URL and web mTLS paths |
+| `authentik.env` | Authentik database and bootstrap configuration |
+| `sandboxd.env` | Allowlisted image, GPU UUID, paths and resource policy |
 
-Key worker values include unique `WORKER_ID`, certificate-matching `WORKER_NAME`, exact `GPU_UUID`, `GPU_TYPE`, `WORKER_CAPABILITIES=cpu,gpu`, `WORKER_MAX_CONCURRENCY=1`, `INTERNAL_API_URL=https://api.internal:8443`, `NATS_URL=tls://nats.internal:4222`, `S3_INTERNAL_URL=https://objects.example.org`, distinct S3 credentials, attempt root, and the qualified chemistry digest.
+Key worker values:
 
-`control-compose.env` contains only the three secrets required while Compose renders the project: `POSTGRES_PASSWORD`, `AUTHENTIK_DB_PASSWORD`, and `SEAWEED_FILER_DB_PASSWORD`. The runtime service files remain separate. Every production environment file is supplied through Ansible Vault.
+```text
+WORKER_NAME=mscoc6
+WORKER_ID=<stable UUID>
+GPU_UUID=<nvidia-smi UUID>
+GPU_TYPE=<qualified profile>
+WORKER_CAPABILITIES=cpu,gpu
+WORKER_MAX_CONCURRENCY=1
+S3_ARTIFACT_BUCKET=library-artifacts
+CHEMISTRY_IMAGE_DIGEST=<immutable digest>
+```
 
-`sandboxd.env` contains only policy configuration: attempt root, exact chemistry digest, allowed GPU UUID, seccomp path, AppArmor profile, Unix socket, and `SANDBOXD_GROUP=libraryprep-agent`. It contains no network credentials. Ansible creates fixed GID 65532 for the agent socket and fixed GID 65200 for read-only access to per-service private keys; only containers that need PKI material receive the latter supplementary group.
+The Compose project fixes `ALLOWED_WORKER_NAME`, the agent name, and concurrency
+to `mscoc6`, `mscoc6`, and one. An accidental Vault edit therefore cannot turn
+another machine into a worker.
 
-## 4. Internal PKI
+Key sandbox values:
 
-Issue a private CA and short-lived service certificates. Required identities include API, scheduler, GC, storage-init, web BFF, Caddy, NATS, both storage gateways, and every worker. Worker certificate CN must exactly equal `WORKER_NAME`; the API binds that CN to the worker UUID on every internal request. NATS maps certificate identities to subject permissions.
+```text
+ATTEMPT_ROOT=/srv/library-prep/attempts
+SANDBOXD_SOCKET=/run/library-prep/sandboxd.sock
+SANDBOXD_GROUP=libraryprep
+ALLOWED_GPU_UUIDS=<same exact UUID>
+CHEMISTRY_IMAGE_DIGEST=<same immutable digest>
+CHEMISTRY_SECCOMP_PROFILE=/etc/library-prep/chemistry-seccomp.json
+CHEMISTRY_APPARMOR_PROFILE=library-prep-chemistry
+```
 
-Do not mount the Docker socket into Authentik or an agent. Authentik runs server and worker containers without managed outposts.
+Vault also supplies the filer password, pgBackRest cipher passphrase, and four
+distinct S3 credential pairs: storage-init, API, GC, and worker.
 
-## 5. Apply configuration
+## 6. Issue internal certificates
+
+Use an internal CA and separate certificates for:
+
+- API (`api.internal`);
+- NATS (`nats.internal`, CN `nats`);
+- scheduler (CN `scheduler`);
+- storage (`storage.internal`);
+- storage-init;
+- garbage collector;
+- website backend;
+- Caddy storage client;
+- monitoring;
+- worker (CN exactly `mscoc6`).
+
+Install them through `vault_pki_files`. Private keys are never committed or put
+in a browser.
+
+## 7. Install without starting the full platform
+
+Run the first Ansible pass while `platform_start_enabled` is still `false`:
 
 ```bash
 cd deploy/ansible
 ansible-galaxy collection install -r requirements.yml
+ansible -i inventory/production.yml platform_nodes -m ping
 ansible-playbook -i inventory/production.yml --ask-vault-pass site.yml
 ```
 
-The playbook installs full-mesh WireGuard `/32` peers, private names, nftables, Compose projects, secrets/PKI, migrations, systemd units, the host sandboxd binary, storage metadata, S3 credentials, private Prometheus/node/blackbox monitoring, and backup repositories.
+This installs the dedicated account, files, firewall, backup configuration,
+sandbox policy, Compose project, and systemd units. It intentionally does not
+start the complete website yet.
 
-Inspect after deployment:
+## 8. Bootstrap authentication
+
+Start only the database, Authentik, and Caddy first. Caddy does not depend on
+the application being ready, so the authentication domain is available while
+the API remains stopped:
+
+```bash
+cd /opt/library-prep/deploy/mscoc6
+docker compose --env-file /etc/library-prep/images.env \
+  --env-file /etc/library-prep/domains.env \
+  --env-file /etc/library-prep/compose.env \
+  up -d postgres authentik-server authentik-worker caddy
+```
+
+Then:
+
+1. Create an OAuth2/OIDC provider using Authorization Code + PKCE.
+2. Set callback `https://app.example.org/auth/callback`.
+3. Configure immutable subject, verified email, account status, and roles
+   `user`, `operator`, `admin`.
+4. Require MFA for administrators and manual approval for every alpha account.
+5. Put `AUTH_MODE=oidc` and the exact issuer/client ID in `control.env`.
+6. Set `platform_start_enabled: true` in `inventory/production.yml`.
+
+Do not use development authentication on the deployed host.
+
+## 9. Start the complete platform
+
+```bash
+cd deploy/ansible
+ansible-playbook -i inventory/production.yml --ask-vault-pass site.yml
+```
+
+This second pass installs the production OIDC settings, starts the complete
+single-host platform, and enables the external PostgreSQL backup timer.
+
+## 10. Inspect the result
+
+On `mscoc6`:
 
 ```bash
 systemctl --failed
-wg show
+systemctl status library-prep-sandboxd.service
+systemctl status library-prep-mscoc6.service
+systemctl status library-prep-mscoc6-backup.timer
+
+cd /opt/library-prep/deploy/mscoc6
+docker compose \
+  --env-file /etc/library-prep/images.env \
+  --env-file /etc/library-prep/domains.env \
+  --env-file /etc/library-prep/compose.env \
+  ps
+
+ss -lntup
 nft list ruleset
-docker compose -f /opt/library-prep/deploy/control/compose.yml ps
-docker compose -f /opt/library-prep/deploy/worker/compose.yml ps
-docker compose -f /opt/library-prep/deploy/storage/compose.yml ps
 ```
 
-## 6. Authentik
+Confirm that only SSH from the approved network and public TCP 80/443 are
+reachable. PostgreSQL, NATS, API, storage internals, and Prometheus must not be
+public.
 
-Create an OIDC provider using Authorization Code + PKCE. Configure exact issuer/audience, callback `https://app.example.org/auth/callback`, and claims for immutable `sub`, email verification, account status, and roles `user`, `operator`, `admin`. Require MFA for admins and manual approval for every alpha account. Disable managed outposts.
+## 11. Qualify before users
 
-## 7. Qualification before enabling users
+Run a small end-to-end job first, then retain evidence for:
 
-1. Run S3 tests through both the public Caddy hostname and private split-horizon hostname: multipart, checksum headers, ETag CORS exposure, abort, range, presign, listing, lifecycle, and gateway failover. Verify each worker policy permits only `GetObject` on inputs/attempt artifacts and `PutObject` beneath attempt prefixes; explicitly prove that `DeleteObject`, listing, bucket administration, and writes outside the attempt hierarchy are denied.
-2. Confirm Caddy streams a file larger than RAM without proportional RSS growth.
-3. Reboot every host and verify the pinned systemd unit restores the intended Compose project.
-4. Run the chemistry image startup qualification on each GPU generation with the production AppArmor/seccomp policies.
-5. Perform the restore, NATS reconstruction, stale-fencing, network partition, and orphan-cleanup gates.
+- one worker row named `mscoc6` and no other schedulable worker;
+- `WORKER_MAX_CONCURRENCY=1`;
+- queued behavior while the GPU is busy;
+- GPU UUID/profile match and real chemistry smoke;
+- upload, checksum, range, resume, download, and retention;
+- sandbox containment and scratch/output limits;
+- worker crash, lease expiry, and stale fencing;
+- complete JetStream loss and database reconstruction;
+- PostgreSQL restore from the external filesystem;
+- host reboot and automatic service recovery.
 
-Do not change the web label from `CONTROLLED ALPHA` until every public-registration gate is signed off.
+The alpha stays closed until [RELEASE_GATES.md](RELEASE_GATES.md) has retained
+evidence from the real host.

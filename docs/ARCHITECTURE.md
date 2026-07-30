@@ -1,26 +1,42 @@
 # Architecture and invariants
 
+## Approved execution boundary
+
+All website-submitted work executes on `mscoc6`. There is one registered worker
+identity, one configured GPU UUID, and `WORKER_MAX_CONCURRENCY=1`. The worker may
+consume both CPU and GPU task subjects, but tasks run one at a time.
+
+The scheduler may split a large chemistry job into multiple shards after
+profiling or retry handling. Splitting is a data-management mechanism, not
+cluster fan-out: every shard returns to the same queue and waits for the sole
+`mscoc6` worker.
+
+No personal account or home directory participates in execution. The host
+account `libraryprep` is non-login UID/GID 65532. That number matches the agent
+and chemistry containers, and it owns `/srv/library-prep/attempts`.
+
 ## Authority and delivery
 
-PostgreSQL is the sole authoritative state machine. JetStream is durable delivery infrastructure and may be destroyed and rebuilt without inventing task state.
+PostgreSQL is the sole authoritative state machine. JetStream is durable
+delivery infrastructure and may be destroyed and rebuilt without inventing
+task state.
 
 ```mermaid
 sequenceDiagram
     participant DB as PostgreSQL
-    participant O as Outbox publisher
+    participant O as Scheduler
     participant JS as JetStream
-    participant W as Go agent
+    participant W as mscoc6 agent
     participant S as Offline sandbox
-    participant OBJ as SeaweedFS
+    participant OBJ as Local S3
 
-    DB->>DB: create task + reserve peak + outbox event
-    O->>DB: FOR UPDATE SKIP LOCKED
-    O->>JS: publish with Nats-Msg-Id = outbox UUID
-    JS-->>W: task reference
-    W->>W: 3-sample idle check
+    DB->>DB: create task + reservation + outbox event
+    O->>DB: lock pending outbox row
+    O->>JS: publish stable event UUID
+    JS-->>W: deliver next queued task
+    W->>W: three-sample GPU idle check
     W->>DB: claim through API
-    DB-->>W: attempt UUID + fencing token + 90 s lease
-    W->>W: repeat 3-sample idle check
+    DB-->>W: attempt UUID + fencing token + lease
     W->>S: fixed sandbox request
     loop every 20 seconds
         W->>DB: renew lease
@@ -28,104 +44,109 @@ sequenceDiagram
     end
     S-->>W: bounded files + result manifest
     W->>OBJ: immutable attempt-prefix upload
-    W->>DB: CAS commit token, lease, version, checksums, capacity
+    W->>DB: fenced commit
     DB-->>W: committed
     W->>JS: ACK
 ```
 
-A crash after JetStream publication but before the outbox row is marked delivered republishes the same UUID. JetStream deduplication and database claim rules make that harmless. ACK occurs only after the database commit.
+A crash after queue publication but before the outbox row is marked delivered
+republishes the same event UUID. JetStream deduplication and database claim
+rules make that harmless. ACK occurs only after the database commit.
 
 ## Job workflow
 
-1. A completed, checksum-verified upload creates a `profile` CPU task and server-owned peak reservation.
-2. The offline profiler applies structural safety limits and writes Parquet plus a cost-weighted shard plan. Fifty thousand records is a ceiling, not a target.
-3. The winning profile commit atomically creates GPU `conformer` tasks and their outbox events.
-4. A second CUDA OOM or sandbox timeout splits a shard in half. Splitting repeats until a singleton; a failing singleton is quarantined and recorded in the final manifest.
-5. Once all live GPU shards succeed or are quarantined, one CPU `finalize` task receives immutable artifact descriptors and writes `manifest.json`.
-6. Only the winning fenced finalizer transitions `finalizing -> succeeded`. Its global/user peak reservations shrink to the actual retained input and committed-artifact bytes; they are released only after PostgreSQL-driven deletion succeeds.
+1. A checksum-verified upload creates a CPU profile task.
+2. Profiling applies structural limits and creates a cost-weighted shard plan.
+3. GPU conformer tasks enter one shared queue.
+4. `mscoc6` runs one task when its configured GPU is genuinely idle.
+5. A repeated CUDA OOM or timeout splits the shard and queues the children.
+6. After all shards succeed or are quarantined, a CPU finalizer writes the
+   manifest.
+7. The winning fenced finalizer transitions the job to `succeeded`.
 
-All artifacts live under:
+Artifacts use immutable keys:
 
 ```text
 jobs/{job_id}/tasks/{task_id}/attempts/{attempt_id}/...
 ```
 
-There is no object-store rename. Losing attempt prefixes become eligible for garbage collection after 24 hours and only when PostgreSQL proves no committed artifact references them.
+Losing attempts become eligible for PostgreSQL-driven cleanup after 24 hours.
 
-## Network
+## Single-host network
 
-Compose bridge networks are host-local. Cross-host traffic uses WireGuard `10.77.0.0/24`; Ansible installs exact `/32` peers, stable host aliases, and nftables rules.
+All long-lived services share a private Docker bridge on `mscoc6`.
 
-Only control-host TCP 80/443 is public. Workers reach API 8443 and NATS 4222 through WireGuard. PostgreSQL 5432 accepts only control-local services and the three filer hosts. Storage master, filer, volume, and S3 ports are WireGuard-only.
+- Caddy alone publishes TCP 80/443.
+- PostgreSQL, NATS, the API, SeaweedFS internals, and exporters have no public
+  host port.
+- The API, NATS, and S3 gateway still use internal certificates and mTLS.
+- The website uses the API certificate as a backend-for-frontend identity.
+- The worker certificate CN is `mscoc6` and is bound to its stable worker UUID.
+- The Docker socket is never mounted into the web, API, Authentik, or agent
+  containers.
 
-`objects.example.org` uses split-horizon resolution:
+Three public DNS names point to the approved web endpoint:
 
-- Public DNS resolves to control-host Caddy.
-- Host/container mappings inside the fleet resolve to both S3 gateway WireGuard addresses.
-- SeaweedFS `externalUrl` is the same public hostname, so SigV4 Host calculation is identical on internal and browser paths.
-
-API/NATS use mTLS. S3 uses TLS plus client certificates over WireGuard. Each agent has its own certificate, NATS identity, worker UUID, and S3 key.
+```text
+app.example.org
+auth.example.org
+objects.example.org
+```
 
 ## Object storage
 
-SeaweedFS 4.29 runs three masters and three volume servers. Every node is a distinct rack and default replication is `010`: an additional copy on a different rack in the same data center. Raw configured volume capacity is approximately 1.6 TB, yielding an operational ceiling of 800 GB (800,000,000,000 bytes) after two copies. Qualification must calibrate that ceiling downward if filesystem and metadata reserves leave less usable space.
+SeaweedFS remains because the browser protocol uses S3 multipart uploads,
+checksums, ranges, and presigned URLs. The current deployment runs one master,
+one volume, one filer, and one S3 gateway on `mscoc6` with replication `000`.
 
-Two filer/S3 gateways share dedicated PostgreSQL filer metadata. `storage-init` creates private input/artifact buckets and verifies a 30-day storage safety-net lifecycle plus one-day incomplete-multipart cleanup. PostgreSQL GC remains authoritative for seven-day post-completion artifact visibility, 24-hour attempt cleanup, active-download grace, and orphan reconciliation.
+This is one local object copy, not durable cluster storage. PostgreSQL backups
+must go to a separately managed mounted filesystem. Completed artifacts remain
+temporary seven-day outputs and users must download anything they need to keep.
 
-## Capacity
+The configured global storage ceiling must be measured from the actual
+`/srv/library-prep` filesystem after reserving space for PostgreSQL, objects,
+Docker, scratch, retries, and the 20 GiB emergency reserve. It is not the old
+800 GB fleet value.
 
-The browser cannot choose reservation values. The API derives the initial estimate from verified input size and requested conformers, then enforces:
+## GPU admission
 
-```text
-retained input
-+ predicted working set
-+ predicted final output
-+ finalization margin
-+ retry margin
-+ multipart margin
-```
+The worker is pinned to one exact GPU UUID. Before accepting work and again
+before sandbox launch, it takes three `nvidia-smi` samples. Every sample must
+show:
 
-Every artifact commit locks the job and rejects a write that would take committed bytes beyond the active global reservation. Sandboxd separately meters output and scratch every second. Host scratch admission is:
+- the configured UUID;
+- no compute PID;
+- no more than 5% utilization;
+- enough free VRAM for the qualified profile;
+- a healthy driver.
 
-```text
-ceil(predicted scratch × 1.5) + 5 GiB finalization headroom + 20 GiB host reserve
-```
+External GPU use records `blocked_external_gpu`, delays the queue message, and
+does not consume an execution attempt.
 
-Because output and scratch share the host volume in this deployment, the claim gate additionally requires the task's predicted output bytes to fit; the sandbox meters output and scratch independently against their own hard caps.
-
-Reservation expiry is not treated as free physical capacity. Terminal jobs retain actual input/output bytes against both the fleet and account limits. At seven-day expiration, the job becomes inaccessible first; the GC then deletes artifacts after the active-download grace and deletes an input only after every job/rerun referencing it is expired. The corresponding reservations are released only when those object deletions are recorded successfully.
-
-## GPU profiles
-
-| Setting | RTX 4090 | RTX 5090 |
-|---|---:|---:|
-| Engine chunk | 50,000 | 100,000 |
-| nvMolKit batch | 250 | 500 |
-| Batches per GPU | 2 | 4 |
-| Required free VRAM | 22,000 MiB | 30,000 MiB |
-| OOM fallback chunk | 25,000 | 50,000 |
-| OOM fallback batch | 128 | 250 |
-
-Before pulling GPU work and again before sandbox launch, the agent collects three `nvidia-smi` samples. Every sample must show the configured UUID, no compute PID, utilization at most 5%, sufficient free VRAM, and a healthy driver. External GPU use records `blocked_external_gpu`, delayed-NAKs the message, and does not create or increment an execution attempt.
+The code currently knows `rtx4090` and `rtx5090` profiles. A different card in
+`mscoc6` requires a new named profile and a retained scientific qualification
+corpus before use.
 
 ## Sandbox boundary
 
-The long-lived agent handles network and credentials but never imports RDKit. It calls root-owned `sandboxd` over a Unix socket. Sandboxd validates image digest, GPU UUID, attempt paths, resource profile, and fixed entrypoint before invoking Docker.
+The networked agent owns service credentials but never imports RDKit. It calls
+root-owned `sandboxd` over a Unix socket whose group is `libraryprep`.
 
-Each chemistry container has no network, no secrets, read-only root, non-root UID, a read-only input mount, attempt-only output/scratch mounts, all capabilities dropped, no-new-privileges, AppArmor/seccomp, PID/CPU/RAM/disk/time limits, minimal init, and an explicit GPU UUID. The agent never receives `/var/run/docker.sock`.
+Each chemistry container has no network, no secrets, a read-only root,
+non-root UID/GID 65532, a read-only input mount, attempt-only output and scratch
+mounts, all capabilities dropped, no-new-privileges, AppArmor/seccomp, bounded
+PID/CPU/RAM/disk/time, and only the allowlisted GPU UUID.
 
-## Failure policy
+## Failure domain
 
-| Failure | Database/message result |
-|---|---|
-| Deterministic invalid chemistry | Rejection artifact; no infrastructure retry |
-| External process on GPU | Delivery deferral; delayed NAK; no attempt |
-| Temporary dependency outage | 30 s, 2 min, 10 min JetStream backoff with jitter |
-| Worker crash | Lease expiry, stale fencing token, redelivery |
-| CUDA OOM / sandbox timeout | Fallback attempt, then recursive split and singleton quarantine |
-| Checksum or reservation violation | Terminal failure; uncommitted prefix later collected |
-| MaxDeliver advisory | Copy to `TASK_DLQ`, update DB, delete source message |
+`mscoc6` is intentionally a single execution and control failure domain. If it
+is offline:
 
-## Deliberate alpha failure domains
+- the website and job API are unavailable;
+- no task can execute;
+- locally stored uploads and artifacts may be unavailable or lost;
+- recovery depends on rebuilding the host and restoring PostgreSQL from the
+  external backup mount.
 
-The control host still contains public edge, Authentik, API, scheduler, PostgreSQL, NATS, and monitoring hooks. Loss of that host stops new work; the alpha RTO is four hours. Object data has two copies across hosts but no site-loss guarantee. NATS is one node because it is reconstructable. PostgreSQL targets a five-minute RPO through continuous WAL archiving and encrypted base backups to two repository hosts.
+This design is appropriate only for the controlled alpha agreed with the
+service owner. It makes no high-availability or site-loss claim.
